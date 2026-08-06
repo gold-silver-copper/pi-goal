@@ -485,7 +485,9 @@ test("hard-cap recovery remains readable and keyboard-operable at supported widt
 });
 
 test("safeGoalMenuText strips terminal controls and bounds untrusted previews", () => {
-	const safe = safeGoalMenuText(`hello\u001b[31m\u009bworld\n${"界".repeat(200)}`);
+	const safe = safeGoalMenuText(
+		`hello\u001b[31mred\u001b[0m\u001b]52;c;clipboard\u0007\u009bworld\r\u0000\n${"界".repeat(200)}`,
+	);
 	assert.equal(
 		[...safe].some((character) => {
 			const codePoint = character.codePointAt(0) ?? 0;
@@ -493,6 +495,8 @@ test("safeGoalMenuText strips terminal controls and bounds untrusted previews", 
 		}),
 		false,
 	);
+	assert.doesNotMatch(safe, /\[(?:31|0)m|clipboard|\]52/u);
+	assert.match(safe, /hellored world/u);
 	assert.match(safe, /…$/u);
 	assert.ok([...safe].length <= 121);
 });

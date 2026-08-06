@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { type ExtensionCommandContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { checkpointGoalActiveTime } from "./accounting.js";
+import { notifyTerminal, safeTerminalText } from "./errors.js";
 import { abortCurrentTurn, type GoalRuntime, STATUS_KEY } from "./runtime.js";
 import {
 	DEFAULT_GOAL_SETTINGS,
@@ -29,7 +30,11 @@ export async function showGoalSettings(
 ) {
 	const settingsPath = options.settingsPath ?? join(getAgentDir(), GOAL_SETTINGS_FILE);
 	if (ctx.mode !== "tui") {
-		ctx.ui.notify(`Edit pi-goal settings manually: ${safeTerminalText(settingsPath)}`, "info");
+		notifyTerminal(
+			ctx.ui,
+			`Edit pi-goal settings manually: ${safeTerminalText(settingsPath)}`,
+			"info",
+		);
 		return;
 	}
 	const generation = runtime.menuGeneration;
@@ -159,7 +164,7 @@ export async function showGoalSettings(
 					applyGoalSettings(runtime, next, ctx, {
 						save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
 					});
-					ctx.ui.notify(`Goal tools: ${value}.`, "info");
+					notifyTerminal(ctx.ui, `Goal tools: ${value}.`, "info");
 					return { kind: "stay" };
 				} catch (error) {
 					notifySettingsFailure(ctx, settingsPath, error);
@@ -180,13 +185,18 @@ export async function showGoalSettings(
 						try {
 							await options.onQueueUnfrozen?.(ctx);
 						} catch (error) {
-							ctx.ui.notify(
+							notifyTerminal(
+								ctx.ui,
 								`Goal queue enabled, but automatic resume failed: ${safeTerminalText(formatError(error))}. Reopen /goal to retry.`,
 								"warning",
 							);
 						}
 					}
-					ctx.ui.notify(`Ordered goal queue: ${enabled ? "Experimental" : "Off"}.`, "info");
+					notifyTerminal(
+						ctx.ui,
+						`Ordered goal queue: ${enabled ? "Experimental" : "Off"}.`,
+						"info",
+					);
 					return { kind: "stay" };
 				} catch (error) {
 					notifySettingsFailure(ctx, settingsPath, error);
@@ -204,7 +214,7 @@ export async function showGoalSettings(
 					applyGoalSettings(runtime, next, ctx, {
 						save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
 					});
-					ctx.ui.notify(`Managed run RPC: ${enabled ? "On" : "Off"}.`, "info");
+					notifyTerminal(ctx.ui, `Managed run RPC: ${enabled ? "On" : "Off"}.`, "info");
 					return { kind: "stay" };
 				} catch (error) {
 					notifySettingsFailure(ctx, settingsPath, error);
@@ -310,7 +320,8 @@ async function applyLimitChoice(
 ) {
 	if (!isCurrent() || !isLimitSelection(itemId)) return { kind: "rejected" as const };
 	if ((runtime.activeGoal?.id ?? null) !== activeGoalId) {
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			"The active goal changed while the safety setting was open. No settings were changed.",
 			"warning",
 		);
@@ -321,7 +332,8 @@ async function applyLimitChoice(
 	if (!isCurrent()) return { kind: "rejected" as const };
 	if (limit === undefined || limit === previous) return { kind: "back" as const };
 	if ((runtime.activeGoal?.id ?? null) !== activeGoalId) {
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			"The active goal changed while editing the safety setting. No settings were changed.",
 			"warning",
 		);
@@ -330,7 +342,8 @@ async function applyLimitChoice(
 	const confirmation = await confirmLowerActiveLimit(runtime, ctx, field, limit);
 	if (!isCurrent() || !confirmation.apply) return { kind: "rejected" as const };
 	if (confirmation.goalId !== undefined && runtime.activeGoal?.id !== confirmation.goalId) {
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			"The active goal changed while confirming the limit. No settings were changed.",
 			"warning",
 		);
@@ -340,7 +353,7 @@ async function applyLimitChoice(
 		applyGoalSettings(runtime, withLimit(runtime.settings, field, limit), ctx, {
 			save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
 		});
-		ctx.ui.notify(formatLimitSuccess(field, limit), "info");
+		notifyTerminal(ctx.ui, formatLimitSuccess(field, limit), "info");
 		return { kind: "back" as const };
 	} catch (error) {
 		notifySettingsFailure(ctx, settingsPath, error);
@@ -442,7 +455,8 @@ async function resolveLimitSelection(
 		if (!isCurrent() || raw === undefined) return undefined;
 		const parsed = parseGoalLimit(raw);
 		if (parsed !== undefined) return parsed;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`Enter a whole number greater than 0. Choose ${field === "automaticTurns" ? "Unlimited" : "Off"} from the previous screen if you do not want a limit.`,
 			"warning",
 		);
@@ -607,22 +621,13 @@ function retainedGoalCount(runtime: GoalRuntime) {
 function notifySettingsFailure(ctx: ExtensionCommandContext, settingsPath: string, error: unknown) {
 	const path = safeTerminalText(settingsPath);
 	const detail = safeTerminalText(formatError(error));
-	ctx.ui.notify(
+	notifyTerminal(
+		ctx.ui,
 		error instanceof AggregateError
 			? `Could not apply Goal settings, and rollback was incomplete. Check ${path}, run /reload, and verify the effective settings before retrying: ${detail}`
 			: `Could not save Goal settings; the previous value remains. Check ${path} and retry: ${detail}`,
 		"error",
 	);
-}
-
-function safeTerminalText(value: string) {
-	return [...value]
-		.map((character) => {
-			const codePoint = character.codePointAt(0) ?? 0;
-			return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) ? " " : character;
-		})
-		.join("")
-		.trim();
 }
 
 function formatError(error: unknown) {

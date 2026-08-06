@@ -128,6 +128,29 @@ test("agent_end maps abort, quota failure, and terminal error to distinct stoppe
 	}
 });
 
+test("provider error notifications strip terminal controls without changing classification", async () => {
+	const stopped = await startGoalForTest();
+	await stopped.mock.events.get("agent_end")?.[0]?.(
+		{
+			messages: [
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage:
+						"Permission \u001b]52;c;clipboard\u0007 denied \u001b[2Jremotely \u009bnow\r\u0000",
+				},
+			],
+		},
+		stopped.ctx,
+	);
+
+	const notification = stopped.notifications.at(-1)?.message ?? "";
+	assert.equal(lastGoalStatus(stopped.mock), "blocked");
+	assertNoTerminalControls(notification);
+	assert.doesNotMatch(notification, /clipboard|\[2J/u);
+	assert.match(notification, /Permission\s+denied remotely\s+now/u);
+});
+
 test("terminal agent errors take precedence over missing goal tools", async () => {
 	for (const [errorMessage, expectedStatus] of [
 		["You have hit your ChatGPT usage limit.", "usage_limited"],
@@ -514,6 +537,60 @@ test("manual compaction cancels stale continuation and sends one fresh continuat
 	assert.equal(compacted.mock.sentUserMessages.length, 3);
 });
 
+test("idle manual compaction defers continuation until Pi clears compaction", async () => {
+	const compacted = await startGoalForTest({ isIdle: () => true });
+
+	await compacted.mock.events.get("session_compact")?.[0]?.(
+		{ reason: "manual", willRetry: false },
+		compacted.ctx,
+	);
+	assert.equal(compacted.mock.sentUserMessages.length, 1);
+
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(compacted.mock.sentUserMessages.length, 2);
+	assert.match(compacted.mock.sentUserMessages.at(-1)?.text ?? "", /pi-goal-continuation/);
+});
+
+test("session shutdown cancels a deferred manual-compaction continuation", async () => {
+	const compacted = await startGoalForTest({ isIdle: () => true });
+
+	await compacted.mock.events.get("session_compact")?.[0]?.(
+		{ reason: "manual", willRetry: false },
+		compacted.ctx,
+	);
+	compacted.mock.events.get("session_shutdown")?.[0]?.({}, compacted.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+
+	assert.equal(compacted.mock.sentUserMessages.length, 1);
+});
+
+test("session replacement cancels a deferred manual-compaction continuation", async () => {
+	const compacted = await startGoalForTest({ isIdle: () => true });
+
+	await compacted.mock.events.get("session_compact")?.[0]?.(
+		{ reason: "manual", willRetry: false },
+		compacted.ctx,
+	);
+	await compacted.mock.events.get("session_start")?.[0]?.({}, compacted.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+
+	assert.equal(compacted.mock.sentUserMessages.length, 1);
+});
+
+test("explicit pause cancels a deferred manual-compaction continuation", async () => {
+	const compacted = await startGoalForTest({ isIdle: () => true });
+
+	await compacted.mock.events.get("session_compact")?.[0]?.(
+		{ reason: "manual", willRetry: false },
+		compacted.ctx,
+	);
+	await compacted.mock.commands.get("goal")?.handler("pause", compacted.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+
+	assert.equal(compacted.mock.sentUserMessages.length, 1);
+	assert.equal(lastGoalStatus(compacted.mock), "paused");
+});
+
 test("stale goal tool calls are blocked after pause until a fresh non-goal prompt arrives", async () => {
 	const paused = await startGoalForTest();
 	await paused.mock.commands.get("goal")?.handler("pause", paused.ctx);
@@ -551,6 +628,14 @@ test("stale goal tool calls are blocked after pause until a fresh non-goal promp
 		undefined,
 	);
 });
+
+function assertNoTerminalControls(value: string) {
+	for (const character of value) {
+		const codePoint = character.codePointAt(0) ?? 0;
+		if (character === "\n") continue;
+		assert.ok(codePoint > 0x1f && (codePoint < 0x7f || codePoint > 0x9f));
+	}
+}
 
 test("findFinalAssistantMessage returns the last assistant with a known stop reason", () => {
 	assert.deepEqual(

@@ -62,6 +62,7 @@ export type GoalTool = {
 		details?: {
 			goal?: string;
 			goal_id?: string;
+			summary?: string;
 			reason?: string;
 			evidence?: string;
 			repeated_turns?: number;

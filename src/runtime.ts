@@ -6,7 +6,7 @@ import {
 	formatTokenCount,
 	updateGoalUsage,
 } from "./accounting.js";
-import { formatError, truncateNotification } from "./errors.js";
+import { formatError, notifyTerminal, truncateNotification } from "./errors.js";
 import {
 	appendGoalPromptMarker,
 	extractContinuationMarker,
@@ -111,6 +111,7 @@ export interface StatusContext {
 
 export const STATUS_KEY = "goal";
 export const GOAL_STATE_ENTRY_TYPE = "goal-state";
+export const MAX_GOAL_ID_LENGTH = 128;
 
 /** Canonical Goal state passed to the in-process managed-run publisher. */
 export type GoalStateSnapshotStatus = GoalStatus | "cleared";
@@ -204,6 +205,7 @@ export class GoalRuntime {
 	queueFrozen = false;
 	queueFreezeAwaitingSettle = false;
 	completionStatusTimer?: NodeJS.Timeout;
+	private continuationDispatchTimer?: NodeJS.Timeout;
 	continuationIntent?: ContinuationTicket;
 	continuationDelivery?: ContinuationTicket;
 	goalRecovery?: GoalRecovery;
@@ -361,6 +363,7 @@ export class GoalRuntime {
 		}
 		if (ctx.isIdle?.() !== true || hasPendingMessages(ctx)) return false;
 
+		this.clearContinuationDispatchTimer();
 		this.continuationIntent = undefined;
 		this.continuationDelivery = intent;
 		try {
@@ -373,7 +376,7 @@ export class GoalRuntime {
 			if (this.activeGoal?.id === intent.goalId && this.activeGoal.status === "active") {
 				this.continuationIntent = intent;
 			}
-			ctx.ui.notify(`Goal prompt failed: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Goal prompt failed: ${formatError(error)}`, "error");
 			return false;
 		}
 	}
@@ -557,7 +560,7 @@ export class GoalRuntime {
 			return true;
 		} catch (error) {
 			this.budgetWrapUp.delivered = false;
-			ctx.ui.notify(`Goal budget wrap-up failed: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Goal budget wrap-up failed: ${formatError(error)}`, "error");
 			return false;
 		}
 	}
@@ -578,7 +581,7 @@ export class GoalRuntime {
 			reason: `token budget reached (${formatBudget(goal)})`,
 		});
 		if (!stoppedGoal) return false;
-		ctx.ui.notify(`Goal token budget reached: ${formatBudget(stoppedGoal)}`, "warning");
+		notifyTerminal(ctx.ui, `Goal token budget reached: ${formatBudget(stoppedGoal)}`, "warning");
 		if (sendWrapUp) this.queueBudgetWrapUp(ctx, stoppedGoal);
 		return true;
 	}
@@ -650,7 +653,8 @@ export class GoalRuntime {
 			reason: `${cause} (${count}; ${formatTokenCount(goal.tokensUsed)} tokens)`,
 		});
 		if (!stoppedGoal) return false;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			cause === "continuation_limit"
 				? `Automatic-work limit reached: ${stoppedGoal.automaticModelTurns} of ${automaticLimit} responses. Goal progress is saved with ${formatTokenCount(stoppedGoal.tokensUsed)} cumulative tokens. Open /goal to review and continue.`
 				: `Goal paused: ${count}; ${formatTokenCount(stoppedGoal.tokensUsed)} cumulative tokens. Open /goal to review and continue.`,
@@ -682,7 +686,8 @@ export class GoalRuntime {
 			reason: `agent error after retries${details}`,
 		});
 		if (!stoppedGoal) return false;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`Goal blocked after agent error retries were exhausted${details}. Resolve the blocker or run /goal resume to retry.`,
 			"warning",
 		);
@@ -712,6 +717,7 @@ export class GoalRuntime {
 	}
 
 	clearContinuationTracking() {
+		this.clearContinuationDispatchTimer();
 		this.continuationIntent = undefined;
 		this.continuationDelivery = undefined;
 		this.cancelledContinuationMarkers.clear();
@@ -741,11 +747,34 @@ export class GoalRuntime {
 	}
 
 	cancelContinuationWork() {
+		this.clearContinuationDispatchTimer();
 		if (this.continuationDelivery) {
 			this.rememberCancelledContinuationMarker(this.continuationDelivery.marker);
 		}
 		this.continuationIntent = undefined;
 		this.continuationDelivery = undefined;
+	}
+
+	scheduleContinuationDispatch(ctx: StatusContext, goalId: string) {
+		this.clearContinuationDispatchTimer();
+		const generation = this.menuGeneration;
+		this.continuationDispatchTimer = setTimeout(() => {
+			this.continuationDispatchTimer = undefined;
+			if (
+				generation !== this.menuGeneration ||
+				this.activeGoal?.id !== goalId ||
+				this.activeGoal.status !== "active"
+			) {
+				return;
+			}
+			this.dispatchContinuationIfSettled(ctx);
+		}, 0);
+	}
+
+	private clearContinuationDispatchTimer() {
+		if (!this.continuationDispatchTimer) return;
+		clearTimeout(this.continuationDispatchTimer);
+		this.continuationDispatchTimer = undefined;
 	}
 
 	consumeCancelledContinuationPrompt(prompt: string) {
@@ -957,7 +986,8 @@ export class GoalRuntime {
 			recordUsage,
 		});
 		if (!stoppedGoal) return false;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			"Goal tools are unavailable, so the active goal was paused. Restore the tools and run /goal resume.",
 			"warning",
 		);
@@ -1194,6 +1224,7 @@ export function isContradictoryCompletionSummary(summary: string) {
 
 export function goalIdRejectionReason(goal: ActiveGoal, requestedGoalId: string) {
 	if (!requestedGoalId) return "missing goal_id";
+	if (requestedGoalId.length > MAX_GOAL_ID_LENGTH) return "goal_id is too long";
 	if (requestedGoalId !== goal.id) return "goal_id does not match the active goal";
 	return undefined;
 }
@@ -1213,7 +1244,7 @@ async function sendPrompt(
 		return true;
 	} catch (error) {
 		if (!isCurrent || isCurrent()) {
-			ctx.ui.notify(`Goal prompt failed: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Goal prompt failed: ${formatError(error)}`, "error");
 		}
 		return false;
 	}

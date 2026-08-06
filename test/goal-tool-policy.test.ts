@@ -36,9 +36,17 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
 	// Default settings keep goal tools active for a stable schema.
 	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked"]);
 	const completionParameters = mock.tools.find((tool) => tool.name === "goal_complete")
-		?.parameters as { required?: string[]; properties?: Record<string, unknown> } | undefined;
+		?.parameters as
+		| {
+				required?: string[];
+				properties?: Record<string, { minLength?: number; maxLength?: number }>;
+		  }
+		| undefined;
 	assert.deepEqual(completionParameters?.required, ["goal_id", "summary"]);
-	assert.ok(completionParameters?.properties?.goal_id);
+	assert.equal(completionParameters?.properties?.goal_id?.minLength, 1);
+	assert.equal(completionParameters?.properties?.goal_id?.maxLength, 128);
+	assert.equal(completionParameters?.properties?.summary?.minLength, 1);
+	assert.equal(completionParameters?.properties?.summary?.maxLength, 4_000);
 	const blockerDefinition = mock.tools.find((tool) => tool.name === "goal_blocked");
 	const blockedParameters = blockerDefinition?.parameters as
 		| {
@@ -52,6 +60,8 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
 		"evidence",
 		"repeated_turns",
 	]);
+	assert.equal(blockedParameters?.properties?.goal_id?.minLength, 1);
+	assert.equal(blockedParameters?.properties?.goal_id?.maxLength, 128);
 	assert.equal(blockedParameters?.properties?.reason?.minLength, 1);
 	assert.equal(blockedParameters?.properties?.reason?.maxLength, 1_000);
 	assert.equal(blockedParameters?.properties?.evidence?.minLength, 1);
@@ -132,6 +142,26 @@ test("bare goal is menu-first in TUI, observable in RPC, and rejects headless mo
 		mock.commands.get("goal")?.handler("status", json.ctx) as Promise<unknown>,
 		/\/goal status is unavailable in json mode/i,
 	);
+});
+
+test("malformed goal commands notify UI modes and reject headless modes observably", async () => {
+	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked"] });
+	registerGoal(mock.pi);
+
+	for (const mode of ["tui", "rpc"] as const) {
+		const context = createMockContext({ mode, hasUI: true });
+		await mock.commands.get("goal")?.handler("pause now", context.ctx);
+		assert.match(context.notifications.at(-1)?.message ?? "", /Usage: \/goal pause/i);
+	}
+
+	for (const mode of ["print", "json"] as const) {
+		const context = createMockContext({ mode, hasUI: false });
+		await assert.rejects(
+			mock.commands.get("goal")?.handler("pause now", context.ctx) as Promise<unknown>,
+			/Usage: \/goal pause/i,
+		);
+		assert.equal(context.notifications.length, 0);
+	}
 });
 
 test("session start uses defaults without materializing missing settings", () => {

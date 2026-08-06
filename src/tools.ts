@@ -1,5 +1,12 @@
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	defineTool,
+	type ExtensionAPI,
+	truncateHead,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { notifyTerminal, safeTerminalText } from "./errors.js";
 import {
 	formatStatus,
 	GOAL_BLOCKED_TOOL,
@@ -7,6 +14,7 @@ import {
 	type GoalRuntime,
 	goalIdRejectionReason,
 	isContradictoryCompletionSummary,
+	MAX_GOAL_ID_LENGTH,
 	STATUS_KEY,
 	transitionGoal,
 	truncateNotification,
@@ -26,6 +34,8 @@ interface GoalBlockedDetails {
 	repeated_turns: number;
 }
 
+const MAX_GOAL_TEXT_LENGTH = 4_000;
+const MAX_COMPLETION_SUMMARY_LENGTH = 4_000;
 const MAX_BLOCKER_REASON_LENGTH = 1_000;
 const MAX_BLOCKER_EVIDENCE_LENGTH = 4_000;
 
@@ -45,10 +55,14 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 		],
 		parameters: Type.Object({
 			goal_id: Type.String({
+				minLength: 1,
+				maxLength: MAX_GOAL_ID_LENGTH,
 				description:
 					"The exact goal_id shown in the current active /goal prompt. Used only to reject stale completion calls from older turns.",
 			}),
 			summary: Type.String({
+				minLength: 1,
+				maxLength: MAX_COMPLETION_SUMMARY_LENGTH,
 				description:
 					"State what was completed and what evidence verified it. Do not use this tool to report partial progress, blockers, failures, or remaining work.",
 			}),
@@ -61,20 +75,20 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 
 			if (!completedGoal) {
 				const rejection = "Goal completion rejected: no active goal.";
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 
 				return {
-					content: [{ type: "text", text: rejection }],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 				};
 			}
 			const completingDuringBudgetWrapUp = runtime.hasActiveBudgetWrapUp();
 			if (!runtime.canRecordGoalUsage() && !completingDuringBudgetWrapUp) {
 				const rejection = "Goal completion rejected: current run does not own the active goal.";
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 				return {
-					content: [{ type: "text", text: rejection }],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 				};
 			}
 			if (hasPendingSkipForGoal(runtime, completedGoal.id)) {
@@ -83,17 +97,17 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				runtime.updateStatus(ctx, completedGoal);
 				runtime.clearBudgetWrapUp();
 				const rejection = "Goal completion rejected: goal is queued to be skipped.";
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 				return {
-					content: [{ type: "text", text: rejection }],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 					terminate: true,
 				};
 			}
 			const staleGoalRejection = goalIdRejectionReason(completedGoal, requestedGoalId);
 			if (staleGoalRejection) {
 				const rejection = `Goal completion rejected: ${staleGoalRejection}.`;
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 				if (completingDuringBudgetWrapUp) {
 					runtime.recordGoalUsage(completedGoal, ctx);
 					runtime.persistGoal(completedGoal);
@@ -102,42 +116,39 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				}
 
 				return {
-					content: [{ type: "text", text: rejection }],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 					terminate: completingDuringBudgetWrapUp || undefined,
 				};
 			}
 			if (completedGoal.status !== "active" && !completingDuringBudgetWrapUp) {
 				const rejection = `Goal completion rejected: goal is ${completedGoal.status}, not active.`;
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 
 				return {
-					content: [{ type: "text", text: rejection }],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 				};
 			}
 
 			const rejectionReason = !summary
 				? "summary is empty"
-				: isContradictoryCompletionSummary(summary)
-					? "summary says the goal is not complete"
-					: undefined;
+				: summary.length > MAX_COMPLETION_SUMMARY_LENGTH
+					? "summary is too long"
+					: isContradictoryCompletionSummary(summary)
+						? "summary says the goal is not complete"
+						: undefined;
 			if (rejectionReason) {
 				runtime.recordGoalUsage(completedGoal, ctx);
 				runtime.persistGoal(completedGoal);
 				runtime.updateStatus(ctx, completedGoal);
 				const rejection = `Goal completion rejected: ${rejectionReason}.`;
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 				if (completingDuringBudgetWrapUp) runtime.clearBudgetWrapUp();
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: rejection,
-						},
-					],
-					details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+					content: toolContent(rejection),
+					details: completionDetails(goal, requestedGoalId, summary),
 					terminate: completingDuringBudgetWrapUp || undefined,
 				};
 			}
@@ -148,14 +159,14 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			if (runtime.pendingQueueAction?.kind === "prioritize") {
 				runtime.persistGoal(runtime.activeGoal);
 				ctx.ui.setStatus(STATUS_KEY, "complete");
-				ctx.ui.notify(`Goal complete: ${goal}. Priority goal waits for Pi to settle.`, "info");
+				notifyTerminal(
+					ctx.ui,
+					`Goal complete: ${goal}. Priority goal waits for Pi to settle.`,
+					"info",
+				);
 				return {
-					content: [{ type: "text", text: `Goal complete: ${summary}` }],
-					details: {
-						goal,
-						goal_id: requestedGoalId,
-						summary,
-					} satisfies GoalCompleteDetails,
+					content: toolContent(`Goal complete: ${summary}`),
+					details: completionDetails(goal, requestedGoalId, summary),
 					terminate: true,
 				};
 			}
@@ -168,22 +179,16 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				};
 				runtime.persistGoal(runtime.activeGoal);
 				ctx.ui.setStatus(STATUS_KEY, "complete");
-				ctx.ui.notify(
+				notifyTerminal(
+					ctx.ui,
 					`Goal complete: ${goal}. Next goal queued: ${runtime.queuedGoals[0]?.text}`,
 					"info",
 				);
 				return {
-					content: [
-						{
-							type: "text",
-							text: `Goal complete: ${summary}\nNext goal queued: ${runtime.queuedGoals[0]?.text}`,
-						},
-					],
-					details: {
-						goal,
-						goal_id: requestedGoalId,
-						summary,
-					} satisfies GoalCompleteDetails,
+					content: toolContent(
+						`Goal complete: ${summary}\nNext goal queued: ${runtime.queuedGoals[0]?.text}`,
+					),
+					details: completionDetails(goal, requestedGoalId, summary),
 					terminate: true,
 				};
 			}
@@ -192,11 +197,11 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			ctx.ui.setStatus(STATUS_KEY, formatStatus(runtime.activeGoal));
 			runtime.clearActiveGoal(ctx);
 			runtime.showCompletionStatus(ctx);
-			ctx.ui.notify(`Goal complete: ${goal}`, "info");
+			notifyTerminal(ctx.ui, `Goal complete: ${goal}`, "info");
 
 			return {
-				content: [{ type: "text", text: `Goal complete: ${summary}` }],
-				details: { goal, goal_id: requestedGoalId, summary } satisfies GoalCompleteDetails,
+				content: toolContent(`Goal complete: ${summary}`),
+				details: completionDetails(goal, requestedGoalId, summary),
 				terminate: true,
 			};
 		},
@@ -217,6 +222,8 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 		],
 		parameters: Type.Object({
 			goal_id: Type.String({
+				minLength: 1,
+				maxLength: MAX_GOAL_ID_LENGTH,
 				description: "The exact goal_id shown in the current active /goal prompt.",
 			}),
 			reason: Type.String({
@@ -244,16 +251,10 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				typeof params.repeated_turns === "number" ? params.repeated_turns : Number.NaN;
 			const reject = (rejectionReason: string, terminate = false) => {
 				const rejection = `goal_blocked rejected: ${rejectionReason}.`;
-				ctx.ui.notify(rejection, "warning");
+				notifyTerminal(ctx.ui, rejection, "warning");
 				return {
-					content: [{ type: "text" as const, text: rejection }],
-					details: {
-						goal,
-						goal_id: requestedGoalId,
-						reason: reason.slice(0, MAX_BLOCKER_REASON_LENGTH),
-						evidence: evidence.slice(0, MAX_BLOCKER_EVIDENCE_LENGTH),
-						repeated_turns: Number.isFinite(repeatedTurns) ? repeatedTurns : 0,
-					} satisfies GoalBlockedDetails,
+					content: toolContent(rejection),
+					details: blockerDetails(goal, requestedGoalId, reason, evidence, repeatedTurns),
 					...(terminate ? { terminate: true as const } : {}),
 				};
 			};
@@ -287,17 +288,11 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				reason,
 			});
 			if (!stoppedGoal) return reject("active goal changed before blocker transition");
-			ctx.ui.notify(`Goal blocked: ${truncateNotification(reason)}`, "warning");
+			notifyTerminal(ctx.ui, `Goal blocked: ${truncateNotification(reason)}`, "warning");
 
 			return {
-				content: [{ type: "text", text: `Goal blocked: ${reason}` }],
-				details: {
-					goal,
-					goal_id: requestedGoalId,
-					reason,
-					evidence,
-					repeated_turns: repeatedTurns,
-				} satisfies GoalBlockedDetails,
+				content: toolContent(`Goal blocked: ${reason}`),
+				details: blockerDetails(goal, requestedGoalId, reason, evidence, repeatedTurns),
 				terminate: true,
 			};
 		},
@@ -305,6 +300,42 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 
 	pi.registerTool(goalCompleteTool);
 	pi.registerTool(goalBlockedTool);
+}
+
+function toolContent(text: string) {
+	return [
+		{
+			type: "text" as const,
+			text: truncateHead(safeTerminalText(text), {
+				maxBytes: DEFAULT_MAX_BYTES,
+				maxLines: DEFAULT_MAX_LINES,
+			}).content,
+		},
+	];
+}
+
+function completionDetails(goal: string, goalId: string, summary: string): GoalCompleteDetails {
+	return {
+		goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
+		goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
+		summary: summary.slice(0, MAX_COMPLETION_SUMMARY_LENGTH),
+	};
+}
+
+function blockerDetails(
+	goal: string,
+	goalId: string,
+	reason: string,
+	evidence: string,
+	repeatedTurns: number,
+): GoalBlockedDetails {
+	return {
+		goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
+		goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
+		reason: reason.slice(0, MAX_BLOCKER_REASON_LENGTH),
+		evidence: evidence.slice(0, MAX_BLOCKER_EVIDENCE_LENGTH),
+		repeated_turns: Number.isFinite(repeatedTurns) ? repeatedTurns : 0,
+	};
 }
 
 function hasPendingSkipForGoal(runtime: GoalRuntime, goalId: string) {

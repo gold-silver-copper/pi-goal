@@ -4,6 +4,7 @@ import {
 	type AssistantMessage as PiAssistantMessage,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { assistantUsageTokens, nonNegativeFiniteNumber } from "./accounting.js";
 
 export type AgentStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
@@ -36,12 +37,32 @@ const RETRYABLE_GOAL_ERROR_PATTERNS = [
 	/context[_\s-]*length[_\s-]*exceeded|input exceeds the context window/i,
 ] as const;
 
+export function safeTerminalText(value: string) {
+	return [...stripTerminalSequences(value)]
+		.map((character) => {
+			const codePoint = character.codePointAt(0) ?? 0;
+			if (character === "\n") return character;
+			return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) ? " " : character;
+		})
+		.join("")
+		.trim();
+}
+
+export function notifyTerminal(
+	ui: { notify: (message: string, level?: "info" | "warning" | "error") => void },
+	message: string,
+	level?: "info" | "warning" | "error",
+) {
+	ui.notify(safeTerminalText(message), level);
+}
+
 export function formatError(error: unknown) {
 	return truncateNotification(error instanceof Error ? error.message : String(error));
 }
 
 export function truncateNotification(value: string) {
-	return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+	const safe = [...safeTerminalText(value)];
+	return safe.length > 160 ? `${safe.slice(0, 157).join("")}...` : safe.join("");
 }
 
 export function isUsageLimitedGoalInterruption(assistant: AssistantMessageLike) {

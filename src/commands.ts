@@ -1,5 +1,6 @@
 import { checkpointGoalActiveTime, currentTokenTotal, formatTokenCount } from "./accounting.js";
 import { validateObjective } from "./command.js";
+import { notifyTerminal } from "./errors.js";
 import { safeGoalMenuText } from "./menu.js";
 import type { ActiveGoal } from "./persistence.js";
 import { buildGoalPrompt, buildObjectiveUpdatedPrompt, buildResumePrompt } from "./prompts.js";
@@ -50,7 +51,7 @@ export class GoalCommandController {
 		if (isRequestCurrent && !isRequestCurrent()) return;
 		const validationError = validateObjective(objective);
 		if (validationError) {
-			ctx.ui.notify(validationError, "warning");
+			notifyTerminal(ctx.ui, validationError, "warning");
 			return;
 		}
 
@@ -74,7 +75,7 @@ export class GoalCommandController {
 				`Current goal: ${safeGoalMenuText(existingGoal.text, 4_000)}${queuedRemovalPreview}\n\nNew goal: ${safeGoalMenuText(objective, 4_000)}`,
 			);
 			if (!shouldReplace) {
-				ctx.ui.notify(`Goal kept: ${existingGoal.text}`, "info");
+				notifyTerminal(ctx.ui, `Goal kept: ${existingGoal.text}`, "info");
 				return;
 			}
 			if (isRequestCurrent && !isRequestCurrent()) return;
@@ -85,7 +86,11 @@ export class GoalCommandController {
 					this.runtime.pendingQueueAction,
 				) !== existingQueueIdentity
 			) {
-				ctx.ui.notify("The goal queue changed while confirmation was open. Try again.", "warning");
+				notifyTerminal(
+					ctx.ui,
+					"The goal queue changed while confirmation was open. Try again.",
+					"warning",
+				);
 				return;
 			}
 		}
@@ -97,7 +102,7 @@ export class GoalCommandController {
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
-			ctx.ui.notify(`Cannot start /goal: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Cannot start /goal: ${formatError(error)}`, "error");
 			if (existingGoal?.status === "active") this.runtime.pauseGoalForUnavailableTools(ctx);
 			return;
 		}
@@ -167,7 +172,8 @@ export class GoalCommandController {
 			return;
 		}
 		const automaticLimit = this.runtime.settings.continuationLimits.automaticTurns;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`${existingGoal ? "Goal replaced" : "Goal started"}: ${objective}. ${
 				startedGoal.tokenBudget === undefined
 					? ""
@@ -184,7 +190,7 @@ export class GoalCommandController {
 	async addGoal(objective: string, tokenBudget: number | undefined, ctx: StatusContext) {
 		const validationError = validateObjective(objective);
 		if (validationError) {
-			ctx.ui.notify(validationError, "warning");
+			notifyTerminal(ctx.ui, validationError, "warning");
 			return;
 		}
 		if (!this.runtime.activeGoal) {
@@ -196,7 +202,8 @@ export class GoalCommandController {
 			createQueuedGoal(objective, tokenBudget),
 		);
 		this.runtime.persistGoal(this.runtime.activeGoal);
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`Goal added at position ${this.runtime.queuedGoals.length + 1}: ${objective}`,
 			"info",
 		);
@@ -205,7 +212,7 @@ export class GoalCommandController {
 	async prioritizeGoal(objective: string, tokenBudget: number | undefined, ctx: StatusContext) {
 		const validationError = validateObjective(objective);
 		if (validationError) {
-			ctx.ui.notify(validationError, "warning");
+			notifyTerminal(ctx.ui, validationError, "warning");
 			return;
 		}
 		if (!this.runtime.activeGoal) {
@@ -216,7 +223,7 @@ export class GoalCommandController {
 		this.runtime.pendingQueueAction = { kind: "prioritize", objective, tokenBudget };
 		this.runtime.persistGoal(this.runtime.activeGoal);
 		if (ctx.isIdle?.() !== true || hasPendingMessages(ctx)) {
-			ctx.ui.notify(`Priority goal queued until Pi settles: ${objective}`, "info");
+			notifyTerminal(ctx.ui, `Priority goal queued until Pi settles: ${objective}`, "info");
 			return;
 		}
 		await this.dispatchPendingQueueActionIfSettled(ctx);
@@ -225,29 +232,33 @@ export class GoalCommandController {
 	dropLastGoal(ctx: StatusContext) {
 		const currentGoal = this.runtime.activeGoal;
 		if (!currentGoal) {
-			ctx.ui.notify("No goals to drop.", "info");
+			notifyTerminal(ctx.ui, "No goals to drop.", "info");
 			return;
 		}
 		const result = dropLastQueuedGoal(currentGoal, this.runtime.queuedGoals);
 		if (!result.goal) {
 			this.runtime.clearActiveGoal(ctx);
-			ctx.ui.notify(`Goal dropped: ${result.removed?.text ?? currentGoal.text}`, "warning");
+			notifyTerminal(
+				ctx.ui,
+				`Goal dropped: ${result.removed?.text ?? currentGoal.text}`,
+				"warning",
+			);
 			return;
 		}
 		this.runtime.queuedGoals = result.queue;
 		this.runtime.persistGoal(result.goal);
-		ctx.ui.notify(`Goal dropped: ${result.removed?.text ?? "unknown goal"}`, "warning");
+		notifyTerminal(ctx.ui, `Goal dropped: ${result.removed?.text ?? "unknown goal"}`, "warning");
 	}
 
 	async skipGoal(ctx: StatusContext) {
 		const currentGoal = this.runtime.activeGoal;
 		if (!currentGoal) {
-			ctx.ui.notify("No goals to skip.", "info");
+			notifyTerminal(ctx.ui, "No goals to skip.", "info");
 			return;
 		}
 		if (this.runtime.queuedGoals.length === 0) {
 			this.runtime.clearActiveGoal(ctx);
-			ctx.ui.notify(`Goal skipped: ${currentGoal.text}. No goals remain.`, "warning");
+			notifyTerminal(ctx.ui, `Goal skipped: ${currentGoal.text}. No goals remain.`, "warning");
 			return;
 		}
 		if (currentGoal.status === "active") this.runtime.recordGoalUsage(currentGoal, ctx);
@@ -262,7 +273,7 @@ export class GoalCommandController {
 			completedText: currentGoal.text,
 		};
 		this.runtime.persistGoal(currentGoal);
-		ctx.ui.notify(`Goal skip queued until Pi settles: ${currentGoal.text}`, "info");
+		notifyTerminal(ctx.ui, `Goal skip queued until Pi settles: ${currentGoal.text}`, "info");
 		if (ctx.isIdle?.() === true && !hasPendingMessages(ctx)) {
 			await this.dispatchPendingQueueActionIfSettled(ctx);
 		}
@@ -334,7 +345,8 @@ export class GoalCommandController {
 			: undefined;
 		if (!this.runtime.activeGoal) {
 			this.runtime.clearActiveGoal(ctx);
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				reason === "complete"
 					? `Goal complete: ${previousText}. No goals remain.`
 					: `Goal skipped: ${previousText}. No goals remain.`,
@@ -349,7 +361,8 @@ export class GoalCommandController {
 			if (blocksStaleGoalToolCalls(this.runtime.activeGoal.status)) {
 				this.runtime.blockStaleGoalToolCalls();
 			}
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`${reason === "complete" ? "Goal complete" : "Goal skipped"}: ${previousText}. Next goal remains ${this.runtime.activeGoal.status}: ${this.runtime.activeGoal.text}`,
 				"info",
 			);
@@ -365,7 +378,7 @@ export class GoalCommandController {
 				restoreGoal: this.runtime.activeGoal,
 				abortTurn: false,
 			});
-			ctx.ui.notify(`Cannot start the next /goal: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Cannot start the next /goal: ${formatError(error)}`, "error");
 			return false;
 		}
 		const activatedGoal = this.runtime.activeGoal;
@@ -382,13 +395,15 @@ export class GoalCommandController {
 				restoreGoal: activatedGoal,
 				abortTurn: false,
 			});
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Next goal paused after prompt delivery failed: ${activatedGoal.text}`,
 				"warning",
 			);
 			return false;
 		}
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`${reason === "complete" ? "Goal complete" : "Goal skipped"}: ${previousText}. Started next goal: ${activatedGoal.text}`,
 			"info",
 		);
@@ -396,7 +411,8 @@ export class GoalCommandController {
 	}
 
 	notifyFrozenQueue(ctx: StatusContext) {
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			"The experimental goal queue is frozen. Re-enable experimental.goals in pi-goal.json and run /reload, or use /goal clear.",
 			"warning",
 		);
@@ -404,11 +420,12 @@ export class GoalCommandController {
 
 	pauseGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			ctx.ui.notify("No active goal.", "info");
+			notifyTerminal(ctx.ui, "No active goal.", "info");
 			return;
 		}
 		if (this.runtime.activeGoal.status !== "active") {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal is ${this.runtime.activeGoal.status}; only active goals can be paused.`,
 				"warning",
 			);
@@ -418,16 +435,17 @@ export class GoalCommandController {
 			kind: "explicit_pause",
 			expectedGoalId: this.runtime.activeGoal.id,
 		});
-		if (stoppedGoal) ctx.ui.notify(`Goal paused: ${stoppedGoal.text}`, "info");
+		if (stoppedGoal) notifyTerminal(ctx.ui, `Goal paused: ${stoppedGoal.text}`, "info");
 	}
 
 	async resumeGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			ctx.ui.notify("No active goal.", "info");
+			notifyTerminal(ctx.ui, "No active goal.", "info");
 			return;
 		}
 		if (!isResumableGoalStatus(this.runtime.activeGoal.status)) {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal is ${this.runtime.activeGoal.status}; only paused, blocked, usage-limited, or budget-limited goals can be resumed.`,
 				"warning",
 			);
@@ -437,7 +455,8 @@ export class GoalCommandController {
 			this.runtime.activeGoal.tokenBudget !== undefined &&
 			this.runtime.activeGoal.tokensUsed >= this.runtime.activeGoal.tokenBudget
 		) {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal token budget is still reached: ${formatBudget(this.runtime.activeGoal)}`,
 				"warning",
 			);
@@ -447,7 +466,7 @@ export class GoalCommandController {
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
-			ctx.ui.notify(`Cannot resume /goal: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Cannot resume /goal: ${formatError(error)}`, "error");
 			return;
 		}
 		const stoppedGoal = this.runtime.activeGoal;
@@ -462,7 +481,8 @@ export class GoalCommandController {
 		this.runtime.persistGoal(this.runtime.activeGoal);
 		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 		if (this.runtime.activeGoal.status !== "active") {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal token budget is still reached: ${formatBudget(this.runtime.activeGoal)}`,
 				"warning",
 			);
@@ -490,7 +510,8 @@ export class GoalCommandController {
 			return;
 		}
 		const automaticLimit = this.runtime.settings.continuationLimits.automaticTurns;
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`Goal resumed from ${stoppedStatusLabel(stoppedStatus)}: ${resumedGoal.text}. ${
 				automaticLimit === null
 					? "Automatic work remains Unlimited; goal progress and cumulative usage are preserved."
@@ -502,7 +523,7 @@ export class GoalCommandController {
 
 	clearGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			ctx.ui.notify("No active goal.", "info");
+			notifyTerminal(ctx.ui, "No active goal.", "info");
 			this.runtime.cancelContinuationWork();
 			this.runtime.clearGoalRecovery();
 			this.runtime.clearBudgetWrapUp();
@@ -514,17 +535,17 @@ export class GoalCommandController {
 
 		const stoppedGoal = this.runtime.activeGoal.text;
 		this.runtime.clearActiveGoal(ctx);
-		ctx.ui.notify(`Goal cleared: ${stoppedGoal}`, "warning");
+		notifyTerminal(ctx.ui, `Goal cleared: ${stoppedGoal}`, "warning");
 	}
 
 	async editGoal(objective: string, tokenBudget: number | undefined, ctx: StatusContext) {
 		const validationError = validateObjective(objective);
 		if (validationError) {
-			ctx.ui.notify(validationError, "warning");
+			notifyTerminal(ctx.ui, validationError, "warning");
 			return;
 		}
 		if (!this.runtime.activeGoal) {
-			ctx.ui.notify("No active goal. Use /goal <objective> to start one.", "warning");
+			notifyTerminal(ctx.ui, "No active goal. Use /goal <objective> to start one.", "warning");
 			return;
 		}
 
@@ -553,7 +574,7 @@ export class GoalCommandController {
 			try {
 				this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 			} catch (error) {
-				ctx.ui.notify(`Cannot reactivate /goal: ${formatError(error)}`, "error");
+				notifyTerminal(ctx.ui, `Cannot reactivate /goal: ${formatError(error)}`, "error");
 				if (this.runtime.activeGoal?.status === "active") {
 					this.runtime.pauseGoalForUnavailableTools(ctx);
 				}
@@ -602,7 +623,7 @@ export class GoalCommandController {
 		} else {
 			this.runtime.clearStaleGoalToolCallBlock();
 		}
-		ctx.ui.notify(`Goal updated: ${objective}`, "info");
+		notifyTerminal(ctx.ui, `Goal updated: ${objective}`, "info");
 	}
 
 	showGoal(ctx: StatusContext) {
@@ -636,7 +657,7 @@ export class GoalCommandController {
 				`/goal status is unavailable in ${ctx.mode} mode because Pi does not expose an extension-command output channel. Use TUI or RPC mode.`,
 			);
 		}
-		ctx.ui.notify(message, "info");
+		notifyTerminal(ctx.ui, message, "info");
 	}
 
 	private async activatePrioritizedGoal(
@@ -659,7 +680,7 @@ export class GoalCommandController {
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
-			ctx.ui.notify(`Cannot prioritize /goal: ${formatError(error)}`, "error");
+			notifyTerminal(ctx.ui, `Cannot prioritize /goal: ${formatError(error)}`, "error");
 			if (currentGoal.status === "complete") {
 				// Completion already committed, so retain the priority intent for a
 				// later /reload after the tool policy is restored.
@@ -725,7 +746,7 @@ export class GoalCommandController {
 			this.runtime.toolPolicy.restore(visibilityBeforeActivation);
 			return false;
 		}
-		ctx.ui.notify(`Goal prioritized: ${objective}`, "info");
+		notifyTerminal(ctx.ui, `Goal prioritized: ${objective}`, "info");
 		return true;
 	}
 }

@@ -1,6 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { completeGoalArguments, parseCommand } from "./command.js";
 import type { GoalCommandController } from "./commands.js";
+import { notifyTerminal, safeTerminalText } from "./errors.js";
 import { showGoalManager } from "./menu.js";
 import type { GoalRuntime } from "./runtime.js";
 import { showGoalSettings } from "./settings-ui.js";
@@ -26,7 +27,7 @@ export function registerGoalCommand(
 				experimentalGoals: runtime.settings.experimental.goals,
 			});
 			if (typeof result === "string") {
-				ctx.ui.notify(result, "warning");
+				reportCommandError(result, ctx);
 				return;
 			}
 			if (result.kind === "show" && args.trim() === "") {
@@ -48,7 +49,8 @@ export function registerGoalCommand(
 				return;
 			}
 			if (runtime.pendingQueueAction && result.kind !== "show" && result.kind !== "clear") {
-				ctx.ui.notify(
+				notifyTerminal(
+					ctx.ui,
 					"A queued goal change is waiting for Pi to settle. Retry after it finishes.",
 					"warning",
 				);
@@ -89,4 +91,10 @@ export function registerGoalCommand(
 			}
 		},
 	});
+}
+
+function reportCommandError(message: string, ctx: ExtensionCommandContext) {
+	const safeMessage = safeTerminalText(message);
+	if (ctx.mode === "print" || ctx.mode === "json") throw new Error(safeMessage);
+	notifyTerminal(ctx.ui, safeMessage, "warning");
 }

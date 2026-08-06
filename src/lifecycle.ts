@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentTokenTotal } from "./accounting.js";
 import type { GoalCommandController } from "./commands.js";
+import { notifyTerminal } from "./errors.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
 import { buildGoalPrompt, buildGoalSystemPrompt } from "./prompts.js";
 import { activateQueuedGoal } from "./queue.js";
@@ -59,13 +60,14 @@ export function registerGoalLifecycle(
 			settingsResult.kind === "loaded" ? settingsResult.settings : DEFAULT_GOAL_SETTINGS;
 		runtime.settingsLoadIssue = settingsResult.kind === "invalid" ? settingsResult : undefined;
 		if (settingsResult.kind === "invalid") {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`pi-goal settings ignored: ${settingsResult.reason}. Using default settings.`,
 				"warning",
 			);
 		}
 		if (runtime.settings.experimental.goals) {
-			ctx.ui.notify(EXPERIMENTAL_GOALS_WARNING, "warning");
+			notifyTerminal(ctx.ui, EXPERIMENTAL_GOALS_WARNING, "warning");
 		}
 		try {
 			runtime.toolPolicy.prepareSessionStart(
@@ -73,7 +75,11 @@ export function registerGoalLifecycle(
 				previousToolVisibility,
 			);
 		} catch (error) {
-			ctx.ui.notify(`Could not restore always-visible goal tools: ${formatError(error)}`, "error");
+			notifyTerminal(
+				ctx.ui,
+				`Could not restore always-visible goal tools: ${formatError(error)}`,
+				"error",
+			);
 		}
 
 		const loaded = loadGoalStateFromSession(ctx);
@@ -85,7 +91,8 @@ export function registerGoalLifecycle(
 		if (runtime.queueFrozen) {
 			if (runtime.activeGoal) runtime.persistGoal(runtime.activeGoal);
 			ctx.ui.setStatus(STATUS_KEY, "queue off");
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				"An experimental goal queue is frozen because experimental.goals is disabled. Re-enable it and run /reload to continue, or use /goal clear.",
 				"warning",
 			);
@@ -213,10 +220,11 @@ export function registerGoalLifecycle(
 		if (wasPiRetry) return;
 		runtime.clearGoalRecoveryForGoal(runtime.activeGoal.id);
 		runtime.requestContinuation(runtime.activeGoal);
-		// Manual compaction does not emit agent_settled. This common dispatcher is
-		// therefore the narrow fallback; threshold compaction leaves the intent for
-		// agent_settled when Pi is still busy.
-		runtime.dispatchContinuationIfSettled(ctx);
+		// Pi emits session_compact before it clears its manual-compaction controller,
+		// so sendUserMessage still rejects inside this hook even when ctx reports idle.
+		// Defer one task; threshold compaction retains the intent for agent_settled
+		// when Pi is still busy.
+		runtime.scheduleContinuationDispatch(ctx, runtime.activeGoal.id);
 	});
 
 	pi.on("input", (event, ctx) => {
@@ -641,20 +649,23 @@ export function registerGoalLifecycle(
 			? ` (${truncateNotification(assistant.errorMessage)})`
 			: "";
 		if (status === "paused") {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal paused after interruption${details}. Run /goal resume to continue.`,
 				"warning",
 			);
 			return;
 		}
 		if (status === "usage_limited") {
-			ctx.ui.notify(
+			notifyTerminal(
+				ctx.ui,
 				`Goal stopped after provider usage limit${details}. Run /goal resume when usage is available.`,
 				"warning",
 			);
 			return;
 		}
-		ctx.ui.notify(
+		notifyTerminal(
+			ctx.ui,
 			`Goal blocked after agent error${details}. Resolve the blocker or run /goal resume to retry.`,
 			"warning",
 		);

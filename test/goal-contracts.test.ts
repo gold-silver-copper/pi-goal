@@ -419,6 +419,17 @@ test("goal start feedback exposes the default cap and explicit Unlimited mode", 
 	assert.equal(unlimited.notifications.at(-1)?.level, "warning");
 });
 
+test("goal notifications sanitize terminal controls without mutating the objective", async () => {
+	const objective = "ship \u001b]52;c;clipboard\u0007 \u001b[2Jclear \u009b31mred\u0000 safely";
+	const started = await startGoalForTest({}, objective);
+	const notification = started.notifications.at(-1)?.message ?? "";
+
+	assert.equal(requireLastGoal(started.mock).text, objective);
+	assertNoTerminalControls(notification);
+	assert.doesNotMatch(notification, /clipboard|\[2J/u);
+	assert.match(notification, /ship\s+clear\s+31mred\s+safely/u);
+});
+
 test("buildGoalSystemPrompt escapes objective XML and includes goal_id guard rules", () => {
 	const prompt = buildGoalSystemPrompt({
 		id: "g<1&2>",
@@ -554,6 +565,72 @@ test("goal_complete requires current goal_id before validating summary", async (
 	} finally {
 		mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 	}
+});
+
+test("terminal tools reject post-schema oversized fields and bound every echoed result", async () => {
+	const oversized = await startGoalForTest();
+	const completionTool = requireGoalTool(oversized.mock, "goal_complete");
+	const blockerTool = requireGoalTool(oversized.mock, "goal_blocked");
+	const goalId = requireLastGoal(oversized.mock).id;
+
+	const longId = "g".repeat(129);
+	const stale = await completionTool.execute(
+		"oversized-completion-id",
+		{ goal_id: longId, summary: "Verified." },
+		new AbortController().signal,
+		() => undefined,
+		oversized.ctx,
+	);
+	assert.match(stale.content?.[0]?.text ?? "", /goal_id is too long/i);
+	assert.ok((stale.details?.goal_id?.length ?? 0) <= 128);
+	assert.equal(lastGoalStatus(oversized.mock), "active");
+
+	const longSummary = "s".repeat(4_001);
+	const rejectedSummary = await completionTool.execute(
+		"oversized-completion-summary",
+		{ goal_id: goalId, summary: longSummary },
+		new AbortController().signal,
+		() => undefined,
+		oversized.ctx,
+	);
+	assert.match(rejectedSummary.content?.[0]?.text ?? "", /summary is too long/i);
+	assert.ok((rejectedSummary.details?.summary?.length ?? 0) <= 4_000);
+	assert.equal(lastGoalStatus(oversized.mock), "active");
+
+	const rejectedBlocker = await blockerTool.execute(
+		"oversized-blocker-id",
+		{
+			goal_id: longId,
+			reason: "Need access",
+			evidence: "Three attempts failed.",
+			repeated_turns: 3,
+		},
+		new AbortController().signal,
+		() => undefined,
+		oversized.ctx,
+	);
+	assert.match(rejectedBlocker.content?.[0]?.text ?? "", /goal_id is too long/i);
+	assert.ok((rejectedBlocker.details?.goal_id?.length ?? 0) <= 128);
+	assert.ok((rejectedBlocker.details?.reason?.length ?? 0) <= 1_000);
+	assert.ok((rejectedBlocker.details?.evidence?.length ?? 0) <= 4_000);
+	assert.equal(lastGoalStatus(oversized.mock), "active");
+
+	const summary = `Verified \u001b]52;c;clipboard\u0007\n${"e\n".repeat(1_978)}e`;
+	assert.ok(summary.length <= 4_000);
+	const accepted = await completionTool.execute(
+		"bounded-completion",
+		{ goal_id: goalId, summary },
+		new AbortController().signal,
+		() => undefined,
+		oversized.ctx,
+	);
+	const output = accepted.content?.[0]?.text ?? "";
+	assert.equal(accepted.terminate, true);
+	assert.equal(accepted.details?.summary, summary);
+	assertNoTerminalControls(output);
+	assert.doesNotMatch(output, /clipboard/u);
+	assert.ok(Buffer.byteLength(output, "utf8") <= 51_200);
+	assert.ok(output.split("\n").length <= 2_000);
 });
 
 test("goal_complete rejects contradictory summaries and accepts verified completion", async () => {
@@ -817,11 +894,13 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
 		assert.equal(lastGoalStatus(blocked.mock), "active");
 	}
 
+	const blockerReason =
+		"Repository \u001b]52;c;clipboard\u0007 access \u001b[2Jrequires \u009bthe user\u0000";
 	const accepted = await blockerTool.execute(
 		"block-accepted",
 		{
 			goal_id: currentGoal.id,
-			reason: "Repository access requires the user",
+			reason: blockerReason,
 			evidence: "Three separate attempts confirmed that no available credential can read it.",
 			repeated_turns: 3,
 		},
@@ -831,10 +910,14 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
 	);
 
 	assert.equal(accepted.terminate, true);
+	assert.equal(accepted.details?.reason, blockerReason);
 	assert.match(accepted.content?.[0]?.text ?? "", /goal blocked/i);
+	assertNoTerminalControls(accepted.content?.[0]?.text ?? "");
+	assert.doesNotMatch(accepted.content?.[0]?.text ?? "", /clipboard|\[2J/u);
 	assert.equal(lastGoalStatus(blocked.mock), "blocked");
 	assert.equal(blocked.statuses.get("goal"), "blocked · automatic 0/25");
 	assert.match(blocked.notifications.at(-1)?.message ?? "", /goal blocked/i);
+	assertNoTerminalControls(blocked.notifications.at(-1)?.message ?? "");
 	assert.deepEqual(
 		blocked.mock.events.get("tool_call")?.[0]?.(
 			{ toolName: "bash", toolCallId: "stale-after-block", input: {} },
@@ -869,3 +952,11 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
 	assert.match(alreadyStopped.content?.[0]?.text ?? "", /blocked, not active/i);
 	assert.equal(alreadyStopped.terminate, undefined);
 });
+
+function assertNoTerminalControls(value: string) {
+	for (const character of value) {
+		const codePoint = character.codePointAt(0) ?? 0;
+		if (character === "\n") continue;
+		assert.ok(codePoint > 0x1f && (codePoint < 0x7f || codePoint > 0x9f));
+	}
+}

@@ -342,7 +342,8 @@ test("replacement confirmation sanitizes terminal controls without changing goal
 	for (const control of ["\u0007", "\u001b", "\u009b"]) {
 		assert.equal(preview.includes(control), false);
 	}
-	assert.match(preview, /Current goal: current ]8;;bad objective/);
+	assert.match(preview, /Current goal: current objective/);
+	assert.doesNotMatch(preview, /]8;;bad/);
 	assert.match(preview, /Queued goals also removed:\n1\. queued objective/);
 	assert.match(preview, /New goal: new 31m objective/);
 	assert.equal(state.activeGoal?.text, "current\u001b]8;;bad\u0007 objective");
