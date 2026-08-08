@@ -1,7 +1,6 @@
 import { checkpointGoalActiveTime, currentTokenTotal, formatTokenCount } from "./accounting.js";
 import { validateObjective } from "./command.js";
-import { notifyTerminal } from "./errors.js";
-import { safeGoalMenuText } from "./menu.js";
+import { notifyTerminal, safeGoalMenuText } from "./errors.js";
 import type { ActiveGoal } from "./persistence.js";
 import { buildGoalPrompt, buildObjectiveUpdatedPrompt, buildResumePrompt } from "./prompts.js";
 import {

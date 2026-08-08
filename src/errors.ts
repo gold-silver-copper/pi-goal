@@ -48,6 +48,14 @@ export function safeTerminalText(value: string) {
 		.trim();
 }
 
+export function safeGoalMenuText(value: string, maxCharacters = 120) {
+	const sanitized = safeTerminalText(value).replace(/\s+/gu, " ").trim();
+	const characters = [...sanitized];
+	return characters.length <= maxCharacters
+		? sanitized
+		: `${characters.slice(0, maxCharacters).join("")}…`;
+}
+
 export function notifyTerminal(
 	ui: { notify: (message: string, level?: "info" | "warning" | "error") => void },
 	message: string,

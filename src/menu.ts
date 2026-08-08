@@ -3,7 +3,10 @@ import type { ActionMenuItem } from "@narumitw/pi-tui-kit";
 import { formatTokenCount as formatCompactTokenCount, formatDuration } from "./accounting.js";
 import { parseTokenBudget } from "./command.js";
 import type { GoalCommandController } from "./commands.js";
-import { notifyTerminal, safeTerminalText } from "./errors.js";
+import { notifyTerminal, safeGoalMenuText } from "./errors.js";
+
+export { safeGoalMenuText } from "./errors.js";
+
 import type { ActiveGoal, PendingQueueAction } from "./persistence.js";
 import { goalQueueIdentity } from "./queue.js";
 import { type GoalRuntime, goalSummary } from "./runtime.js";
@@ -621,14 +624,6 @@ function refreshGoalMenuState(runtime: GoalMenuRuntimeView, ctx: ExtensionComman
 	runtime.recordGoalUsage?.(goal, ctx);
 	runtime.persistGoal?.(goal);
 	runtime.updateStatus?.(ctx, goal);
-}
-
-export function safeGoalMenuText(value: string, maxCharacters = 120) {
-	const sanitized = safeTerminalText(value).replace(/\s+/gu, " ").trim();
-	const characters = [...sanitized];
-	return characters.length <= maxCharacters
-		? sanitized
-		: `${characters.slice(0, maxCharacters).join("")}…`;
 }
 
 async function startFromMenu(commands: GoalCommandController, ctx: ExtensionCommandContext) {
