@@ -2,20 +2,17 @@
 
 ## Continuations and lifecycle
 
-- Record continuation intent at `agent_end`, queue it with `deliverAs: "followUp"`, and retry retained intent only at `agent_settled`.
-- Use a narrowly idle-gated manual-compaction fallback because manual compaction does not emit `agent_settled`.
-- Do not dispatch a follow-up directly from `session_compact`; defer through one owned cancellable task because Pi has not cleared its compaction controller yet.
+- Record continuation intent at `agent_end`, and dispatch or retry it only after `agent_settled` proves the session idle.
+- Use one owned cancellable task for the narrowly idle-gated manual-compaction fallback because `session_compact` fires before Pi clears its controller and does not emit `agent_settled`.
 - Revalidate session and goal ownership after `pi.events.emit()` because sibling listeners can synchronously re-enter the extension.
-- Use `tool_execution_end` for a tool-using turn's just-finished usage and `agent_end` as the no-tool fallback.
-- Activate completed-goal successors and busy priority changes only at the settled idle boundary.
-- Persist pending priority intent so reload cannot lose it or charge the old run to the new goal.
+- Record a tool-using turn's final usage at `tool_execution_end`, with `agent_end` as the no-tool fallback.
+- Activate completed-goal successors and busy priority changes only at the settled idle boundary, and persist pending priority intent across reload.
 - Classify only explicit quota, subscription, credit, or billing exhaustion as `usage_limited`; do not include rate limits, HTTP 429, or server failures.
 
 ## Ownership and recovery
 
 - Bind goal-owned markers to the originating goal ID and add a unique nonce when iterations can repeat.
-- On failed delivery, restore prior state only while that prompt still owns the current goal.
+- Restore failed-delivery state only while that prompt still owns the current goal.
 - If always-mode tool restoration fails, leave visibility unlocked while retaining the exact hidden-tool ownership set for a later retry.
-- Reject exhausted stopped goals before rotating their ID.
-- If `/goal resume` delivery fails, restore the original stopped state, ID, and stale-tool guard.
+- Reject exhausted stopped goals before rotating their ID, and restore the original stopped state, ID, and stale-tool guard if `/goal resume` delivery fails.
 - When blocking a Pi `tool_call` in a bounded flow, abort the turn too because a blocked tool result does not terminate agent-core.
