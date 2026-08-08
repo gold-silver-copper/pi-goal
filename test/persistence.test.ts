@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { pathToFileURL } from "node:url";
+import { test } from "vitest";
 import {
 	type ActiveGoal,
 	loadGoalStateFromSession,
@@ -275,7 +276,12 @@ test("legacy cleanup uses Pi agent directory tilde expansion", () => {
 	);
 
 	try {
-		const persistenceUrl = new URL("../src/persistence.js", import.meta.url).href;
+		const persistenceUrl = pathToFileURL(
+			join(
+				process.cwd(),
+				"node_modules/.cache/pi-extensions-test/packages/pi-goal/src/persistence.js",
+			),
+		).href;
 		const script = `const { clearLegacyPersistedGoal } = await import(${JSON.stringify(persistenceUrl)}); clearLegacyPersistedGoal(${JSON.stringify(cwd)});`;
 		const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
 			cwd: root,

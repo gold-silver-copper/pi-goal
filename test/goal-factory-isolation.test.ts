@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, vi } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import {
 	assistantUsageEntry,
@@ -432,8 +432,8 @@ test("pending compaction recovery survives later child startup", async () => {
 	child.events.get("session_shutdown")?.[0]?.({}, childContext.ctx);
 });
 
-test("completion status timer survives later child startup", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
+test("completion status timer survives later child startup", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout"] });
 	const root = createMockPi();
 	registerGoal(root.pi);
 	const rootContext = createMockContext();
@@ -453,7 +453,7 @@ test("completion status timer survives later child startup", async (t) => {
 	registerGoal(child.pi);
 	const childContext = createMockContext();
 	child.events.get("session_start")?.[0]?.({}, childContext.ctx);
-	t.mock.timers.tick(8_000);
+	vi.advanceTimersByTime(8_000);
 	assert.equal(rootContext.statuses.get("goal"), undefined);
 	assert.equal(childContext.statuses.get("goal"), undefined);
 

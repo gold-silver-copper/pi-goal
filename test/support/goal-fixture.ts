@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after } from "node:test";
+import { afterAll } from "vitest";
 import { createMockContext, createMockPi } from "../../../../test/support.js";
 import goal from "../../src/goal.js";
 
@@ -33,7 +33,7 @@ writeFileSync(
 	'{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}\n',
 );
 
-after(() => rmSync(GOAL_SETTINGS_DIRECTORY, { recursive: true, force: true }));
+afterAll(() => rmSync(GOAL_SETTINGS_DIRECTORY, { recursive: true, force: true }));
 
 export function settingsPath(name: string) {
 	return join(GOAL_SETTINGS_DIRECTORY, name);

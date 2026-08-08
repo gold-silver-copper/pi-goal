@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { completeGoalArguments, parseCommand } from "../src/command.js";
 
 const QUEUE_FEATURE = { experimentalGoals: true } as const;

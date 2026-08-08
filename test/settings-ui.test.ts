@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
+import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import { GoalCommandController } from "../src/commands.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";

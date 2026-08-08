@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import { afterAll, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import goal from "../src/goal.js";
 
@@ -17,7 +17,7 @@ const MISSING_SETTINGS_PATH = join(SETTINGS_DIRECTORY, "missing.json");
 writeFileSync(ENABLED_SETTINGS_PATH, '{"toolVisibility":"always","rpc":{"enabled":true}}\n');
 writeFileSync(DISABLED_SETTINGS_PATH, '{"toolVisibility":"always","rpc":{"enabled":false}}\n');
 writeFileSync(INVALID_SETTINGS_PATH, '{"rpc":{"enabled":"yes"}}\n');
-after(() => rmSync(SETTINGS_DIRECTORY, { recursive: true, force: true }));
+afterAll(() => rmSync(SETTINGS_DIRECTORY, { recursive: true, force: true }));
 
 type RunStatus =
 	| "active"

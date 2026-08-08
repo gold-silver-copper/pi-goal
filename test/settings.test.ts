@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import {
 	DEFAULT_GOAL_SETTINGS,
 	normalizeGoalSettings,
@@ -85,7 +85,7 @@ test("normalizeGoalSettings applies defaults and accepts bounded continuation li
 
 test("saveGoalSettings creates a complete document only on explicit save", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-goal-settings-create-"));
-	t.after(() => rm(directory, { recursive: true, force: true }));
+	t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
 	const parent = join(directory, "nested");
 	const settingsPath = join(parent, "pi-goal.json");
 
@@ -103,7 +103,7 @@ test("saveGoalSettings creates a complete document only on explicit save", async
 
 test("saveGoalSettings atomically preserves unknown top-level and nested fields", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-goal-settings-save-"));
-	t.after(() => rm(directory, { recursive: true, force: true }));
+	t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
 	const settingsPath = join(directory, "pi-goal.json");
 	writeFileSync(
 		settingsPath,
@@ -138,7 +138,7 @@ test("saveGoalSettings atomically preserves unknown top-level and nested fields"
 
 test("saveGoalSettings refuses malformed files and cleans a failed atomic write", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-goal-settings-save-failure-"));
-	t.after(() => rm(directory, { recursive: true, force: true }));
+	t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
 	const settingsPath = join(directory, "pi-goal.json");
 	writeFileSync(settingsPath, "{invalid");
 	assert.throws(() => saveGoalSettings(DEFAULT_GOAL_SETTINGS, settingsPath), /invalid settings/i);
@@ -160,7 +160,7 @@ test("saveGoalSettings refuses malformed files and cleans a failed atomic write"
 
 test("readGoalSettings distinguishes missing, loaded, malformed, and unreadable files", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-goal-settings-"));
-	t.after(() => rm(directory, { recursive: true, force: true }));
+	t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
 	const settingsPath = join(directory, "pi-goal.json");
 
 	assert.deepEqual(readGoalSettings(settingsPath), { kind: "missing" });

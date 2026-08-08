@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, vi } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import {
 	assistantUsageTokens,
@@ -167,9 +167,9 @@ test("goal token usage subtracts its baseline and clamps branch rewinds", async 
 	assert.equal(requireLastGoal(tracked.mock).tokensUsed, 30);
 });
 
-test("active elapsed time excludes stopped waits and survives active edits", async (t) => {
+test("active elapsed time excludes stopped waits and survives active edits", async () => {
 	let now = 10_000;
-	t.mock.method(Date, "now", () => now);
+	vi.spyOn(Date, "now").mockImplementation(() => now);
 	const timed = await startGoalForTest();
 	assert.equal(requireLastGoal(timed.mock).activeStartedAt, now);
 
@@ -196,9 +196,9 @@ test("active elapsed time excludes stopped waits and survives active edits", asy
 	assert.equal(formatDuration(requireLastGoal(timed.mock).timeUsedSeconds ?? 0), "8s");
 });
 
-test("goal completion settles the active clock before clearing state", async (t) => {
+test("goal completion settles the active clock before clearing state", async () => {
 	let now = 50_000;
-	t.mock.method(Date, "now", () => now);
+	vi.spyOn(Date, "now").mockImplementation(() => now);
 	const completed = await startGoalForTest();
 	const goalId = requireLastGoal(completed.mock).id;
 	now += 3_500;
@@ -309,9 +309,9 @@ test("session reload drops malformed persisted budgets instead of limiting the g
 	assert.equal(requireLastGoal(restored.mock).startedAt, 0);
 });
 
-test("legacy active-time state migrates without counting offline or reload time", async (t) => {
+test("legacy active-time state migrates without counting offline or reload time", async () => {
 	let now = 100_000;
-	t.mock.method(Date, "now", () => now);
+	vi.spyOn(Date, "now").mockImplementation(() => now);
 	const legacy = restoreGoalForTest("active", { timeUsedSeconds: 4 });
 
 	now += 2_000;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, test } from "vitest";
 import {
 	fingerprintVisibleAssistantOutput,
 	hasAssistantToolCall,
@@ -520,9 +520,9 @@ test("expanded queued follow-up claims manual ownership at its delivery boundary
 	assert.equal(requireLastGoal(active.mock).toolFreeRepeatCount, 0);
 });
 
-test("owned goal lifecycle boundaries do not consume a transformed follow-up", async (t) => {
+describe("owned goal lifecycle boundaries do not consume a transformed follow-up", () => {
 	for (const order of ["message-before-agent", "agent-before-message"] as const) {
-		await t.test(order, async () => {
+		test(order, async () => {
 			const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
 			const ownedPrompt = active.mock.sentUserMessages.at(-1)?.text ?? "";
 			const safety = requireLastGoal(active.mock);
@@ -574,9 +574,9 @@ test("owned goal lifecycle boundaries do not consume a transformed follow-up", a
 	}
 });
 
-test("owned continuation lifecycle boundaries do not consume a transformed follow-up", async (t) => {
+describe("owned continuation lifecycle boundaries do not consume a transformed follow-up", () => {
 	for (const order of ["message-before-agent", "agent-before-message"] as const) {
-		await t.test(order, async () => {
+		test(order, async () => {
 			const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
 			await active.mock.events.get("agent_end")?.[0]?.(
 				{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },

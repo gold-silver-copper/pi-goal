@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
 

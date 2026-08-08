@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { describe, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import goal from "../src/goal.js";
 import type { ActiveGoal, GoalStateEntryData } from "../src/persistence.js";
@@ -197,7 +197,7 @@ test("automatic queue advance preserves a shelved goal safety epoch", async () =
 	assert.equal(started?.lastToolFreeOutputFingerprint, "a".repeat(64));
 });
 
-test("queued activation consumes promised resume and edit safety resets", async (t) => {
+describe("queued activation consumes promised resume and edit safety resets", () => {
 	const safety = {
 		automaticModelTurns: 7,
 		toolFreeRepeatCount: 2,
@@ -205,7 +205,7 @@ test("queued activation consumes promised resume and edit safety resets", async 
 		safetyPauseCause: "continuation_limit" as const,
 	};
 	for (const scenario of ["resume", "edit"] as const) {
-		await t.test(scenario, async () => {
+		test(scenario, async () => {
 			const original = {
 				...storedGoal("original goal", scenario === "resume" ? "paused" : "active"),
 				...safety,

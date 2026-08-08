@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import { describe, test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import {
 	assistantUsageEntry,
@@ -442,8 +442,8 @@ test("missing goal tools abort an automatic continuation turn", async () => {
 	assert.equal(aborts, 1);
 });
 
-test("missing goal tools abort kickoff, resume, and active-edit prompts", async (t) => {
-	await t.test("kickoff", async () => {
+describe("missing goal tools abort kickoff, resume, and active-edit prompts", () => {
+	test("kickoff", async () => {
 		let aborts = 0;
 		const started = await startGoalForTest({ abort: () => aborts++ });
 		const kickoffPrompt = started.mock.sentUserMessages.at(-1)?.text ?? "";
@@ -458,7 +458,7 @@ test("missing goal tools abort kickoff, resume, and active-edit prompts", async 
 		assert.equal(aborts, 1);
 	});
 
-	await t.test("resume", async () => {
+	test("resume", async () => {
 		let aborts = 0;
 		const resumed = restoreGoalForTest("paused", {}, "always", { abort: () => aborts++ });
 		await resumed.mock.commands.get("goal")?.handler("resume", resumed.ctx);
@@ -474,7 +474,7 @@ test("missing goal tools abort kickoff, resume, and active-edit prompts", async 
 		assert.equal(aborts, 1);
 	});
 
-	await t.test("active edit", async () => {
+	test("active edit", async () => {
 		let aborts = 0;
 		const edited = await startGoalForTest({ abort: () => aborts++ });
 		await edited.mock.commands.get("goal")?.handler("edit revised objective", edited.ctx);
@@ -688,8 +688,8 @@ test("failed first prompt delivery preserves a preexisting external goal-tool se
 	]);
 });
 
-test("failed lazy reactivation deliveries restore the restrictive tool set", async (t) => {
-	await t.test("stopped-goal replacement", async () => {
+describe("failed lazy reactivation deliveries restore the restrictive tool set", () => {
+	test("stopped-goal replacement", async () => {
 		const replaced = restoreGoalForTest("paused", {}, "after-first-goal");
 		const original = requireLastGoal(replaced.mock);
 		replaced.mock.rawPi.setActiveTools(["read", "bash"]);
@@ -704,7 +704,7 @@ test("failed lazy reactivation deliveries restore the restrictive tool set", asy
 		assert.deepEqual(replaced.mock.rawPi.getActiveTools(), ["read", "bash"]);
 	});
 
-	await t.test("resume", async () => {
+	test("resume", async () => {
 		const resumed = restoreGoalForTest("paused", {}, "after-first-goal");
 		const original = requireLastGoal(resumed.mock);
 		resumed.mock.rawPi.setActiveTools(["read", "bash"]);
@@ -719,7 +719,7 @@ test("failed lazy reactivation deliveries restore the restrictive tool set", asy
 		assert.deepEqual(resumed.mock.rawPi.getActiveTools(), ["read", "bash"]);
 	});
 
-	await t.test("budget-increase edit", async () => {
+	test("budget-increase edit", async () => {
 		const edited = restoreGoalForTest("budget_limited", {}, "after-first-goal");
 		const original = requireLastGoal(edited.mock);
 		edited.mock.rawPi.setActiveTools(["read", "bash"]);
