@@ -1,5 +1,15 @@
 # @narumitw/pi-goal
 
+## 0.50.0
+
+### Minor Changes
+
+- db4b576: Add `goal_wait` so active Goals can wait quietly for external messages or an optional bounded deadline without creating automatic continuation loops.
+
+### Patch Changes
+
+- d105b85: Clamp sub-ten-second `goal_wait` deadlines and report their effective delay to prevent rapid automatic wake loops.
+
 ## 0.49.7
 
 ### Patch Changes
