@@ -243,7 +243,7 @@ export function registerGoalLifecycle(
 			// Streaming input is queued before its model work starts. Keep owned
 			// markers pending for message_start, and track non-goal delivery mode so a
 			// steer cannot consume a later follow-up's cleanup protection.
-			if (runtime.acceptExactOwnedInput(event.text)) return;
+			if (runtime.acceptOwnedInputBoundary(event.text)) return;
 			runtime.supersedeOwnedInputCollision(event.text);
 			if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 			if (event.streamingBehavior === "steer" || event.streamingBehavior === "followUp") {

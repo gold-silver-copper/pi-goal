@@ -181,6 +181,168 @@ test("automatic turn_end hard cap pauses a tool loop before another normal respo
 	assert.equal(capped.mock.sentUserMessages.length, 2);
 });
 
+test("a preceding input transform preserves automatic continuation ownership", async () => {
+	let aborts = 0;
+	const capped = await startGoalForTest(
+		{ abort: () => aborts++ },
+		"finish",
+		ONE_TURN_LIMIT_SETTINGS_PATH,
+	);
+	await capped.mock.events.get("agent_end")?.[0]?.(
+		{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
+		capped.ctx,
+	);
+	await capped.mock.events.get("agent_settled")?.[0]?.({}, capped.ctx);
+	const continuation = capped.mock.sentUserMessages.at(-1)?.text ?? "";
+	const transformed = `Respond briefly:\n\n${continuation}`;
+
+	capped.mock.events.get("input")?.[0]?.({ source: "extension", text: transformed }, capped.ctx);
+	capped.mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: transformed, systemPrompt: "base" },
+		capped.ctx,
+	);
+	capped.mock.events.get("turn_end")?.[0]?.(
+		{ message: { role: "assistant", stopReason: "stop", content: [] }, toolResults: [] },
+		capped.ctx,
+	);
+
+	const stopped = requireLastGoal(capped.mock);
+	assert.equal(stopped.status, "paused");
+	assert.equal(stopped.automaticModelTurns, 1);
+	assert.equal(stopped.safetyPauseCause, "continuation_limit");
+	assert.equal(aborts, 1);
+});
+
+test("a following prefix transform preserves automatic continuation ownership", async () => {
+	let aborts = 0;
+	const capped = await startGoalForTest(
+		{ abort: () => aborts++ },
+		"finish",
+		ONE_TURN_LIMIT_SETTINGS_PATH,
+	);
+	await capped.mock.events.get("agent_end")?.[0]?.(
+		{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
+		capped.ctx,
+	);
+	await capped.mock.events.get("agent_settled")?.[0]?.({}, capped.ctx);
+	const continuation = capped.mock.sentUserMessages.at(-1)?.text ?? "";
+	const transformed = `Respond briefly:\n\n${continuation}`;
+
+	capped.mock.events.get("input")?.[0]?.({ source: "extension", text: continuation }, capped.ctx);
+	capped.mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: transformed, systemPrompt: "base" },
+		capped.ctx,
+	);
+	capped.mock.events.get("turn_end")?.[0]?.(
+		{ message: { role: "assistant", stopReason: "stop", content: [] }, toolResults: [] },
+		capped.ctx,
+	);
+
+	const stopped = requireLastGoal(capped.mock);
+	assert.equal(stopped.status, "paused");
+	assert.equal(stopped.automaticModelTurns, 1);
+	assert.equal(stopped.safetyPauseCause, "continuation_limit");
+	assert.equal(aborts, 1);
+});
+
+test("a preceding input transform preserves Goal prompt ownership", async () => {
+	const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
+	const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
+	const transformed = `Respond briefly:\n\n${kickoff}`;
+	const safety = requireLastGoal(active.mock);
+	safety.automaticModelTurns = 2;
+	safety.toolFreeRepeatCount = 2;
+	safety.lastToolFreeOutputFingerprint = "5".repeat(64);
+
+	active.mock.events.get("input")?.[0]?.({ source: "extension", text: transformed }, active.ctx);
+	active.mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: transformed, systemPrompt: "base" },
+		active.ctx,
+	);
+
+	assert.equal(requireLastGoal(active.mock).automaticModelTurns, 0);
+	assert.equal(requireLastGoal(active.mock).toolFreeRepeatCount, 0);
+});
+
+test("a following prefix transform preserves Goal prompt ownership", async () => {
+	const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
+	const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
+	const transformed = `Respond briefly:\n\n${kickoff}`;
+	const safety = requireLastGoal(active.mock);
+	safety.automaticModelTurns = 2;
+	safety.toolFreeRepeatCount = 2;
+	safety.lastToolFreeOutputFingerprint = "4".repeat(64);
+
+	active.mock.events.get("input")?.[0]?.({ source: "extension", text: kickoff }, active.ctx);
+	active.mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: transformed, systemPrompt: "base" },
+		active.ctx,
+	);
+
+	assert.equal(requireLastGoal(active.mock).automaticModelTurns, 0);
+	assert.equal(requireLastGoal(active.mock).toolFreeRepeatCount, 0);
+});
+
+test("a following marker quote or appended text cannot claim a Goal prompt", async () => {
+	for (const variant of ["quoted-marker", "appended-text"] as const) {
+		const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
+		const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
+		const marker = kickoff.match(/<!-- pi-goal-prompt:[^>]+-->/u)?.[0] ?? "";
+		assert.notEqual(marker, "");
+		const safety = requireLastGoal(active.mock);
+		safety.automaticModelTurns = 2;
+		safety.toolFreeRepeatCount = 2;
+		safety.lastToolFreeOutputFingerprint = "3".repeat(64);
+		const external =
+			variant === "quoted-marker"
+				? `External monitor quoted ${marker}`
+				: `${kickoff}\n\nExternal monitor result: approved`;
+
+		active.mock.events.get("input")?.[0]?.({ source: "extension", text: kickoff }, active.ctx);
+		active.mock.events.get("before_agent_start")?.[0]?.(
+			{ prompt: external, systemPrompt: "base" },
+			active.ctx,
+		);
+
+		assert.equal(requireLastGoal(active.mock).automaticModelTurns, 2, variant);
+		assert.equal(requireLastGoal(active.mock).toolFreeRepeatCount, 2, variant);
+	}
+});
+
+test("quoted or externally extended continuation markers remain non-owned", async () => {
+	for (const variant of ["quoted-marker", "appended-text"] as const) {
+		const active = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
+		await active.mock.events.get("agent_end")?.[0]?.(
+			{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
+			active.ctx,
+		);
+		await active.mock.events.get("agent_settled")?.[0]?.({}, active.ctx);
+		const continuation = active.mock.sentUserMessages.at(-1)?.text ?? "";
+		const marker = continuation.match(/<!-- pi-goal-continuation:[^>]+-->/u)?.[0] ?? "";
+		assert.notEqual(marker, "");
+		const external =
+			variant === "quoted-marker"
+				? `External monitor quoted ${marker}`
+				: `${continuation}\n\nExternal monitor result: approved`;
+
+		// pi-goal sees the exact prompt before a later input handler rewrites it.
+		active.mock.events.get("input")?.[0]?.(
+			{ source: "extension", text: continuation, streamingBehavior: "followUp" },
+			active.ctx,
+		);
+		active.mock.events.get("before_agent_start")?.[0]?.(
+			{ prompt: external, systemPrompt: "base" },
+			active.ctx,
+		);
+		active.mock.events.get("turn_end")?.[0]?.(
+			{ message: { role: "assistant", stopReason: "stop", content: [] }, toolResults: [] },
+			active.ctx,
+		);
+
+		assert.equal(requireLastGoal(active.mock).automaticModelTurns, 0, variant);
+	}
+});
+
 test("hard cap aborts Pi recovery started after a retryable boundary error", async () => {
 	let aborts = 0;
 	const capped = await startGoalForTest(

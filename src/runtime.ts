@@ -173,6 +173,7 @@ interface PendingGoalPrompt {
 	goalId: string;
 	resetSafetyEpoch: boolean;
 	fingerprint: string;
+	prompt: string;
 }
 
 interface PendingNonGoalInput {
@@ -232,11 +233,9 @@ export class GoalRuntime {
 	staleGoalToolCallsBlocked = false;
 	readonly toolPolicy: GoalToolPolicy;
 	pendingGoalPromptMarkers = new Map<string, PendingGoalPrompt>();
-	acceptedGoalPromptMarkers = new Set<string>();
 	claimedGoalPromptMarkers = new Map<string, string>();
 	cancelledGoalPromptMarkers = new Map<string, string>();
 	cancelledContinuationMarkers = new Map<string, string>();
-	acceptedContinuationMarkers = new Set<string>();
 	claimedContinuationMarkers = new Map<string, string>();
 	pendingNonGoalInputs: PendingNonGoalInput[] = [];
 	menuGeneration = 0;
@@ -838,9 +837,7 @@ export class GoalRuntime {
 	clearSettledSafetyTracking() {
 		this.guardAbortGoalId = undefined;
 		this.pendingNonGoalInputs = [];
-		this.acceptedGoalPromptMarkers.clear();
 		this.claimedGoalPromptMarkers.clear();
-		this.acceptedContinuationMarkers.clear();
 		this.claimedContinuationMarkers.clear();
 		this.clearAgentRun();
 	}
@@ -864,13 +861,11 @@ export class GoalRuntime {
 		this.continuationIntent = undefined;
 		this.continuationDelivery = undefined;
 		this.cancelledContinuationMarkers.clear();
-		this.acceptedContinuationMarkers.clear();
 		this.claimedContinuationMarkers.clear();
 	}
 
 	clearPendingGoalPrompts() {
 		this.pendingGoalPromptMarkers.clear();
-		this.acceptedGoalPromptMarkers.clear();
 		this.claimedGoalPromptMarkers.clear();
 		this.cancelledGoalPromptMarkers.clear();
 		this.pendingNonGoalInputs = [];
@@ -926,8 +921,10 @@ export class GoalRuntime {
 	consumeCancelledGoalPrompt(prompt: string) {
 		const marker = extractGoalPromptMarker(prompt);
 		if (!marker) return false;
-		const fingerprint = this.cancelledGoalPromptMarkers.get(marker);
-		if (fingerprint !== inputFingerprint(prompt)) return false;
+		const cancelledPrompt = this.cancelledGoalPromptMarkers.get(marker);
+		if (!cancelledPrompt || !preservesOwnedPromptAtTerminalBoundary(prompt, cancelledPrompt)) {
+			return false;
+		}
 		this.cancelledGoalPromptMarkers.delete(marker);
 		return true;
 	}
@@ -935,30 +932,28 @@ export class GoalRuntime {
 	consumeCancelledContinuationPrompt(prompt: string) {
 		const marker = extractContinuationMarker(prompt);
 		if (!marker) return false;
-		const fingerprint = this.cancelledContinuationMarkers.get(marker);
-		if (fingerprint !== inputFingerprint(prompt)) return false;
+		const cancelledPrompt = this.cancelledContinuationMarkers.get(marker);
+		if (!cancelledPrompt || !preservesOwnedPromptAtTerminalBoundary(prompt, cancelledPrompt)) {
+			return false;
+		}
 		this.cancelledContinuationMarkers.delete(marker);
 		return true;
 	}
 
-	acceptExactOwnedInput(prompt: string) {
+	acceptOwnedInputBoundary(prompt: string) {
 		const fingerprint = inputFingerprint(prompt);
 		const goalMarker = extractGoalPromptMarker(prompt);
 		if (goalMarker) {
 			const pending = this.pendingGoalPromptMarkers.get(goalMarker);
-			if (pending?.fingerprint === fingerprint) {
-				this.acceptedGoalPromptMarkers.add(goalMarker);
-				return true;
-			}
+			if (pending && preservesOwnedPromptAtTerminalBoundary(prompt, pending.prompt)) return true;
 			if (this.claimedGoalPromptMarkers.get(goalMarker) === fingerprint) return true;
 		}
 		const continuationMarker = extractContinuationMarker(prompt);
 		if (!continuationMarker) return false;
 		if (
 			this.continuationDelivery?.marker === continuationMarker &&
-			inputFingerprint(this.continuationDelivery.prompt) === fingerprint
+			preservesOwnedPromptAtTerminalBoundary(prompt, this.continuationDelivery.prompt)
 		) {
-			this.acceptedContinuationMarkers.add(continuationMarker);
 			return true;
 		}
 		return this.claimedContinuationMarkers.get(continuationMarker) === fingerprint;
@@ -971,21 +966,19 @@ export class GoalRuntime {
 			const pending = this.pendingGoalPromptMarkers.get(goalMarker);
 			if (pending && pending.fingerprint !== fingerprint) {
 				this.pendingGoalPromptMarkers.delete(goalMarker);
-				this.rememberCancelledGoalPromptMarker(goalMarker, pending.fingerprint);
+				this.rememberCancelledGoalPromptMarker(goalMarker, pending.prompt);
 			}
-			this.acceptedGoalPromptMarkers.delete(goalMarker);
 			this.claimedGoalPromptMarkers.delete(goalMarker);
 		}
 		const continuationMarker = extractContinuationMarker(prompt);
 		if (!continuationMarker) return;
 		if (
 			(this.continuationDelivery?.marker === continuationMarker &&
-				inputFingerprint(this.continuationDelivery.prompt) !== fingerprint) ||
+				!preservesOwnedPromptAtTerminalBoundary(prompt, this.continuationDelivery.prompt)) ||
 			this.continuationIntent?.marker === continuationMarker
 		) {
 			this.cancelContinuationWork();
 		}
-		this.acceptedContinuationMarkers.delete(continuationMarker);
 		this.claimedContinuationMarkers.delete(continuationMarker);
 	}
 
@@ -995,8 +988,7 @@ export class GoalRuntime {
 		if (goalMarker) {
 			const pending = this.pendingGoalPromptMarkers.get(goalMarker);
 			if (
-				pending?.fingerprint === fingerprint ||
-				this.acceptedGoalPromptMarkers.has(goalMarker) ||
+				(pending && preservesOwnedPromptAtTerminalBoundary(prompt, pending.prompt)) ||
 				this.claimedGoalPromptMarkers.get(goalMarker) === fingerprint
 			) {
 				return true;
@@ -1006,8 +998,7 @@ export class GoalRuntime {
 		if (!continuationMarker) return false;
 		return (
 			(this.continuationDelivery?.marker === continuationMarker &&
-				inputFingerprint(this.continuationDelivery.prompt) === fingerprint) ||
-			this.acceptedContinuationMarkers.has(continuationMarker) ||
+				preservesOwnedPromptAtTerminalBoundary(prompt, this.continuationDelivery.prompt)) ||
 			this.claimedContinuationMarkers.get(continuationMarker) === fingerprint
 		);
 	}
@@ -1016,7 +1007,7 @@ export class GoalRuntime {
 		const marker = extractGoalPromptMarker(prompt);
 		if (!marker) return false;
 		const pending = this.pendingGoalPromptMarkers.get(marker);
-		if (!pending || pending.fingerprint !== inputFingerprint(prompt)) return false;
+		if (!pending || !preservesOwnedPromptAtTerminalBoundary(prompt, pending.prompt)) return false;
 		if (
 			!this.queueFrozen &&
 			!this.pendingQueueAction &&
@@ -1093,19 +1084,16 @@ export class GoalRuntime {
 		const fingerprint = inputFingerprint(prompt);
 		if (this.continuationDelivery?.marker === marker) {
 			const delivery = this.continuationDelivery;
-			if (
-				inputFingerprint(delivery.prompt) === fingerprint ||
-				this.acceptedContinuationMarkers.has(marker)
-			) {
-				this.acceptedContinuationMarkers.delete(marker);
+			if (preservesOwnedPromptAtTerminalBoundary(prompt, delivery.prompt)) {
 				this.continuationDelivery = undefined;
-				this.rememberClaimedContinuationMarker(marker, delivery.prompt);
+				this.rememberClaimedContinuationMarker(marker, prompt);
 				return marker.split(":", 1)[0];
 			}
 		}
+		const cancelledPrompt = this.cancelledContinuationMarkers.get(marker);
 		if (
 			this.claimedContinuationMarkers.get(marker) === fingerprint ||
-			this.cancelledContinuationMarkers.get(marker) === fingerprint
+			(cancelledPrompt && preservesOwnedPromptAtTerminalBoundary(prompt, cancelledPrompt))
 		) {
 			return marker.split(":", 1)[0];
 		}
@@ -1246,6 +1234,7 @@ export class GoalRuntime {
 			goalId,
 			resetSafetyEpoch,
 			fingerprint: inputFingerprint(ownedPrompt),
+			prompt: ownedPrompt,
 		});
 		if (this.pendingGoalPromptMarkers.size > MAX_PENDING_GOAL_PROMPTS) {
 			const oldest = this.pendingGoalPromptMarkers.keys().next().value;
@@ -1258,21 +1247,16 @@ export class GoalRuntime {
 		const marker = extractGoalPromptMarker(prompt);
 		if (!marker) return undefined;
 		const pending = this.pendingGoalPromptMarkers.get(marker);
-		if (
-			!pending ||
-			(pending.fingerprint !== inputFingerprint(prompt) &&
-				!this.acceptedGoalPromptMarkers.has(marker))
-		) {
+		if (!pending || !preservesOwnedPromptAtTerminalBoundary(prompt, pending.prompt)) {
 			return undefined;
 		}
-		this.acceptedGoalPromptMarkers.delete(marker);
 		this.pendingGoalPromptMarkers.delete(marker);
-		this.rememberClaimedGoalPromptMarker(marker, pending.fingerprint);
+		this.rememberClaimedGoalPromptMarker(marker, inputFingerprint(prompt));
 		return pending;
 	}
 
-	private rememberCancelledGoalPromptMarker(marker: string, fingerprint: string) {
-		this.cancelledGoalPromptMarkers.set(marker, fingerprint);
+	private rememberCancelledGoalPromptMarker(marker: string, prompt: string) {
+		this.cancelledGoalPromptMarkers.set(marker, prompt);
 		if (this.cancelledGoalPromptMarkers.size <= MAX_PENDING_GOAL_PROMPTS) return;
 		const oldest = this.cancelledGoalPromptMarkers.keys().next().value;
 		if (oldest) this.cancelledGoalPromptMarkers.delete(oldest);
@@ -1297,7 +1281,7 @@ export class GoalRuntime {
 	}
 
 	private rememberCancelledContinuationMarker(ticket: ContinuationTicket) {
-		this.cancelledContinuationMarkers.set(ticket.marker, inputFingerprint(ticket.prompt));
+		this.cancelledContinuationMarkers.set(ticket.marker, ticket.prompt);
 		if (this.cancelledContinuationMarkers.size <= MAX_CANCELLED_CONTINUATION_PROMPTS) return;
 		const oldest = this.cancelledContinuationMarkers.keys().next().value;
 		if (oldest) this.cancelledContinuationMarkers.delete(oldest);
@@ -1488,6 +1472,13 @@ export function goalIdRejectionReason(goal: ActiveGoal, requestedGoalId: string)
 	if (requestedGoalId.length > MAX_GOAL_ID_LENGTH) return "goal_id is too long";
 	if (requestedGoalId !== goal.id) return "goal_id does not match the active goal";
 	return undefined;
+}
+
+function preservesOwnedPromptAtTerminalBoundary(prompt: string, ownedPrompt: string) {
+	// Earlier input handlers may prefix a live pi-goal message before this runtime
+	// can fingerprint it. Require the complete generated prompt as the terminal
+	// boundary so a quoted marker or text appended by an external sender is not owned.
+	return prompt === ownedPrompt || prompt.endsWith(ownedPrompt);
 }
 
 function inputFingerprint(prompt: unknown) {
