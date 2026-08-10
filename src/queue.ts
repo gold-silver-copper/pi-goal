@@ -92,8 +92,11 @@ export function skipGoal(queue: readonly ActiveGoal[]): GoalQueueResult {
 }
 
 export function shelveGoal(goal: ActiveGoal, now = Date.now()): ActiveGoal {
-	if (goal.status !== "active") return { ...goal, activeStartedAt: undefined, updatedAt: now };
-	const shelved = { ...goal, status: "queued" as const, updatedAt: now };
+	const { waiting: _waiting, ...withoutWait } = goal;
+	if (goal.status !== "active") {
+		return { ...withoutWait, activeStartedAt: undefined, updatedAt: now };
+	}
+	const shelved = { ...withoutWait, status: "queued" as const, updatedAt: now };
 	checkpointGoalActiveTime(shelved, now, false);
 	return shelved;
 }

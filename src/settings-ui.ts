@@ -530,6 +530,7 @@ function applyQueueSetting(runtime: GoalRuntime, ctx: ExtensionCommandContext) {
 	else ctx.ui.setStatus(STATUS_KEY, undefined);
 	if (!shouldFreeze) return;
 
+	runtime.clearGoalWaitTimer();
 	runtime.cancelContinuationWork();
 	runtime.clearGoalRecovery();
 	runtime.clearBudgetWrapUp();
@@ -547,6 +548,7 @@ function restorePersistedRuntime(runtime: GoalRuntime, ctx: ExtensionCommandCont
 		runtime.persistGoal(runtime.activeGoal);
 		if (runtime.queueFrozen) ctx.ui.setStatus(STATUS_KEY, "queue off");
 		else runtime.updateStatus(ctx, runtime.activeGoal);
+		runtime.restoreGoalWaitTimer(ctx);
 		return;
 	}
 	ctx.ui.setStatus(STATUS_KEY, undefined);

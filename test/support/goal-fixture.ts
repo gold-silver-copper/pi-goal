@@ -53,7 +53,9 @@ export function registerGoalWithSettingsPath(
 	pi: Parameters<typeof goal>[0],
 	goalSettingsPath: string,
 ) {
-	pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked"])]);
+	pi.setActiveTools([
+		...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait"]),
+	]);
 	goal(pi, { settingsPath: goalSettingsPath });
 }
 export type GoalTool = {
@@ -66,6 +68,8 @@ export type GoalTool = {
 			reason?: string;
 			evidence?: string;
 			repeated_turns?: number;
+			resume_after_ms?: number;
+			resume_at?: number;
 		};
 		terminate?: boolean;
 	}>;
@@ -88,6 +92,7 @@ export type StoredGoal = {
 	lastToolFreeOutputFingerprint?: string;
 	safetyPauseCause?: string;
 	safetyResetPending?: boolean;
+	waiting?: { reason: string; resumeAt?: number };
 };
 
 export function assertHardenedGoalPrompt(prompt: string) {
@@ -118,6 +123,9 @@ export function assertHardenedGoalPrompt(prompt: string) {
 	assert.match(prompt, /goal_blocked.*true impasse.*three consecutive goal turns/is);
 	assert.match(prompt, /resumed.*fresh three-turn blocker audit/is);
 	assert.match(prompt, /hard, slow, uncertain.*recoverable/is);
+	assert.match(prompt, /arrange a non-goal wake message.*goal_wait.*exact current goal_id/is);
+	assert.match(prompt, /goal_wait alone.*parallel sibling tools/is);
+	assert.match(prompt, /goal_blocked.*recoverable external wait/is);
 }
 
 export function assistantUsageEntry(usage: Record<string, unknown>) {

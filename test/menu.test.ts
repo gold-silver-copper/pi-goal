@@ -76,6 +76,16 @@ test("buildGoalMenuState prioritizes actions for empty, active, stopped, budget,
 	unlimited.settings.continuationLimits.automaticTurns = null;
 	assert.match(buildGoalMenuState(unlimited).title, /Automatic work: 12 responses.*Unlimited/is);
 
+	const waiting = runtime({
+		...active,
+		waiting: { reason: "Waiting \u001b]52;c;unsafe\u0007 for review" },
+		activeStartedAt: undefined,
+	});
+	assert.equal(buildGoalMenuState(waiting).actions[0], GOAL_MENU_ACTIONS.resume);
+	assert.match(buildGoalMenuState(waiting).title, /Waiting.*for review/is);
+	assert.equal(buildGoalMenuState(waiting).title.includes(String.fromCharCode(27)), false);
+	assert.equal(buildGoalMenuState(waiting).title.includes(String.fromCharCode(7)), false);
+
 	for (const status of ["paused", "blocked", "usage_limited"] as const) {
 		const stopped = runtime(transitionGoal(active, status));
 		assert.equal(buildGoalMenuState(stopped).actions[0], GOAL_MENU_ACTIONS.resume);
@@ -854,6 +864,26 @@ test("queue confirmations do not mutate a changed active head or queue selection
 		);
 		assert.match(context.notifications.at(-1)?.message ?? "", /goal queue changed.*reopen/i);
 	}
+});
+
+test("main menu routes a waiting goal through the existing resume action", async () => {
+	const waitingGoal = {
+		...createGoal("waiting objective", undefined, 0),
+		waiting: { reason: "Waiting for review" },
+		activeStartedAt: undefined,
+	};
+	const state = runtime(waitingGoal);
+	const tracked = commands();
+	const selections = [GOAL_MENU_ACTIONS.resume];
+	const context = createMockContext({
+		mode: "tui",
+		hasUI: true,
+		select: async () => selections.shift(),
+	});
+
+	await showGoalManager(state, tracked.controller as never, context.ctx, async () => undefined);
+
+	assert.equal(tracked.calls.filter((call) => call.name === "resumeGoal").length, 1);
 });
 
 test("main-menu pause and resume do not mutate a replacement goal", async () => {

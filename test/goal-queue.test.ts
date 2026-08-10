@@ -27,7 +27,7 @@ test("experimental mode keeps singular registration and exposes canonical queue 
 	assert.deepEqual([...harness.mock.commands.keys()], ["goal"]);
 	assert.deepEqual(
 		harness.mock.tools.map(({ name }) => name),
-		["goal_complete", "goal_blocked"],
+		["goal_complete", "goal_blocked", "goal_wait"],
 	);
 	assert.equal(harness.mock.commands.has("goals"), false);
 	assert.deepEqual(
@@ -1413,7 +1413,7 @@ test("disabled settings freeze retained queues without losing state", async () =
 });
 
 async function createHarness(overrides: Record<string, unknown> = {}, enabled = true) {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked"] });
+	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
 	goal(mock.pi, { settingsPath: enabled ? enabledSettingsPath : disabledSettingsPath });
 	const context = createMockContext(overrides);
 	await mock.events.get("session_start")?.[0]?.({}, context.ctx);

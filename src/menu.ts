@@ -86,13 +86,16 @@ export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState 
 	const queueCount = runtime.queuedGoals.length;
 	const pausedByAutomaticLimit =
 		goal?.status === "paused" && goal.safetyPauseCause === "continuation_limit";
+	const waitingReason = goal?.waiting ? safeGoalMenuText(goal.waiting.reason) : undefined;
 	const state = runtime.queueFrozen
 		? "Queue frozen"
 		: runtime.pendingQueueAction
 			? "Waiting for Pi to settle"
 			: pausedByAutomaticLimit
 				? "Paused — automatic-work limit reached"
-				: displayStatus(goal?.status);
+				: waitingReason
+					? `Waiting — ${waitingReason}`
+					: displayStatus(goal?.status);
 	const automaticTurnLimit = runtime.settings.continuationLimits.automaticTurns;
 	const used = goal?.automaticModelTurns ?? 0;
 	const automaticResponses =
@@ -140,6 +143,8 @@ export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState 
 	const actions: string[] = [];
 	if (!goal || goal.status === "complete") {
 		actions.push(GOAL_MENU_ACTIONS.start, GOAL_MENU_ACTIONS.startBudget);
+	} else if (goal.waiting) {
+		actions.push(GOAL_MENU_ACTIONS.resume);
 	} else if (goal.status === "active") {
 		actions.push(GOAL_MENU_ACTIONS.pause);
 	} else if (goal.status === "budget_limited") {

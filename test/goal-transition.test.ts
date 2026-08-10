@@ -4,7 +4,7 @@ import { createMockContext, createMockPi } from "../../../test/support.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
 
 function runtime() {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked"] });
+	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
 	return { mock, state: new GoalRuntime(mock.pi) };
 }
 

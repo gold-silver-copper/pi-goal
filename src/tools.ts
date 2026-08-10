@@ -11,6 +11,7 @@ import {
 	formatStatus,
 	GOAL_BLOCKED_TOOL,
 	GOAL_COMPLETE_TOOL,
+	GOAL_WAIT_TOOL,
 	type GoalRuntime,
 	goalIdRejectionReason,
 	isContradictoryCompletionSummary,
@@ -19,6 +20,7 @@ import {
 	transitionGoal,
 	truncateNotification,
 } from "./runtime.js";
+import { createGoalWait, MAX_GOAL_WAIT_DELAY_MS, MAX_GOAL_WAIT_REASON_LENGTH } from "./wait.js";
 
 interface GoalCompleteDetails {
 	goal: string;
@@ -32,6 +34,14 @@ interface GoalBlockedDetails {
 	reason: string;
 	evidence: string;
 	repeated_turns: number;
+}
+
+interface GoalWaitDetails {
+	goal: string;
+	goal_id: string;
+	reason: string;
+	resume_after_ms?: number;
+	resume_at?: number;
 }
 
 const MAX_GOAL_TEXT_LENGTH = 4_000;
@@ -153,6 +163,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				};
 			}
 
+			runtime.clearGoalWaitTimer();
 			runtime.activeGoal = transitionGoal(completedGoal, "complete");
 			runtime.setCompletionSummary(runtime.activeGoal.id, summary);
 			runtime.recordGoalUsage(runtime.activeGoal, ctx);
@@ -298,8 +309,92 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 		},
 	});
 
+	const goalWaitTool = defineTool({
+		name: GOAL_WAIT_TOOL,
+		label: "Goal Wait",
+		description:
+			"Keep the active /goal alive but quiet while an external event is expected. Call goal_wait alone after arranging a wake message, or provide resume_after_ms as a safety deadline. Do not use it for ordinary unfinished work.",
+		promptSnippet:
+			"Wait quietly for an external event without stopping the active /goal or starting automatic continuations",
+		promptGuidelines: [
+			"Use goal_wait only when progress depends on a later non-goal message, or when resume_after_ms provides a bounded wake-up.",
+			"Arrange the external monitor or wake source before calling goal_wait, and call goal_wait alone because parallel sibling tools can prevent immediate turn termination.",
+			"Pass the exact current goal_id so a stale turn cannot put a replacement goal into waiting.",
+			"Do not use goal_blocked for a recoverable external wait that can be resumed by a message or deadline.",
+		],
+		parameters: Type.Object({
+			goal_id: Type.String({
+				minLength: 1,
+				maxLength: MAX_GOAL_ID_LENGTH,
+				description: "The exact goal_id shown in the current active /goal prompt.",
+			}),
+			reason: Type.String({
+				minLength: 1,
+				maxLength: MAX_GOAL_WAIT_REASON_LENGTH,
+				description: "Why the goal is waiting and which external event should wake it.",
+			}),
+			resume_after_ms: Type.Optional(
+				Type.Integer({
+					minimum: 1,
+					maximum: MAX_GOAL_WAIT_DELAY_MS,
+					description:
+						"Optional safety deadline in milliseconds that requests one continuation if no wake message arrives.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const activeGoal = runtime.activeGoal;
+			const goal = activeGoal?.text ?? "unknown goal";
+			const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
+			const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+			const resumeAfterMs =
+				typeof params.resume_after_ms === "number" ? params.resume_after_ms : undefined;
+			const reject = (rejectionReason: string) => {
+				const rejection = `goal_wait rejected: ${rejectionReason}.`;
+				notifyTerminal(ctx.ui, rejection, "warning");
+				return {
+					content: toolContent(rejection),
+					details: waitDetails(goal, requestedGoalId, reason, resumeAfterMs),
+				};
+			};
+
+			if (!activeGoal) return reject("no active goal");
+			if (!runtime.canRecordGoalUsage()) {
+				return reject("current run does not own the active goal");
+			}
+			if (runtime.pendingQueueAction) return reject("a goal queue transition is pending");
+			const staleGoalRejection = goalIdRejectionReason(activeGoal, requestedGoalId);
+			if (staleGoalRejection) return reject(staleGoalRejection);
+			if (activeGoal.status !== "active") {
+				return reject(`goal is ${activeGoal.status}, not active`);
+			}
+			if (activeGoal.waiting) return reject("goal is already waiting");
+			if (!reason) return reject("reason is empty");
+			if (reason.length > MAX_GOAL_WAIT_REASON_LENGTH) return reject("reason is too long");
+			if (
+				resumeAfterMs !== undefined &&
+				(!Number.isInteger(resumeAfterMs) ||
+					resumeAfterMs < 1 ||
+					resumeAfterMs > MAX_GOAL_WAIT_DELAY_MS)
+			) {
+				return reject(`resume_after_ms must be a whole number from 1 to ${MAX_GOAL_WAIT_DELAY_MS}`);
+			}
+
+			const waiting = createGoalWait(reason, resumeAfterMs);
+			const waitingGoal = runtime.enterGoalWait(ctx, activeGoal.id, waiting);
+			if (!waitingGoal) return reject("active goal changed before waiting transition");
+			notifyTerminal(ctx.ui, `Goal waiting: ${truncateNotification(reason)}`, "info");
+			return {
+				content: toolContent(`Goal waiting: ${reason}`),
+				details: waitDetails(goal, requestedGoalId, reason, resumeAfterMs, waiting.resumeAt),
+				terminate: true,
+			};
+		},
+	});
+
 	pi.registerTool(goalCompleteTool);
 	pi.registerTool(goalBlockedTool);
+	pi.registerTool(goalWaitTool);
 }
 
 function toolContent(text: string) {
@@ -335,6 +430,22 @@ function blockerDetails(
 		reason: reason.slice(0, MAX_BLOCKER_REASON_LENGTH),
 		evidence: evidence.slice(0, MAX_BLOCKER_EVIDENCE_LENGTH),
 		repeated_turns: Number.isFinite(repeatedTurns) ? repeatedTurns : 0,
+	};
+}
+
+function waitDetails(
+	goal: string,
+	goalId: string,
+	reason: string,
+	resumeAfterMs: number | undefined,
+	resumeAt?: number,
+): GoalWaitDetails {
+	return {
+		goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
+		goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
+		reason: reason.slice(0, MAX_GOAL_WAIT_REASON_LENGTH),
+		...(resumeAfterMs === undefined ? {} : { resume_after_ms: resumeAfterMs }),
+		...(resumeAt === undefined ? {} : { resume_at: resumeAt }),
 	};
 }
 

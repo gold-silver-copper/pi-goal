@@ -4,7 +4,9 @@ import { createMockContext, createMockPi } from "../../../test/support.js";
 import { GoalToolPolicy } from "../src/tool-policy.js";
 
 test("tool policy hides and restores only Goal tools it owns", () => {
-	const mock = createMockPi({ activeTools: ["read", "goal_complete", "goal_blocked"] });
+	const mock = createMockPi({
+		activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
+	});
 	const policy = new GoalToolPolicy(mock.pi);
 
 	policy.hideIfLocked();
@@ -17,6 +19,7 @@ test("tool policy hides and restores only Goal tools it owns", () => {
 		"external",
 		"goal_complete",
 		"goal_blocked",
+		"goal_wait",
 	]);
 	assert.equal(policy.hasHiddenTools(), false);
 });

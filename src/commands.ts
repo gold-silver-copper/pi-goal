@@ -2,7 +2,12 @@ import { checkpointGoalActiveTime, currentTokenTotal, formatTokenCount } from ".
 import { validateObjective } from "./command.js";
 import { notifyTerminal, safeGoalMenuText } from "./errors.js";
 import type { ActiveGoal } from "./persistence.js";
-import { buildGoalPrompt, buildObjectiveUpdatedPrompt, buildResumePrompt } from "./prompts.js";
+import {
+	buildGoalPrompt,
+	buildObjectiveUpdatedPrompt,
+	buildResumePrompt,
+	buildWaitingResumePrompt,
+} from "./prompts.js";
 import {
 	activateQueuedGoal,
 	appendGoal,
@@ -106,6 +111,7 @@ export class GoalCommandController {
 			return;
 		}
 
+		this.runtime.clearGoalWaitTimer();
 		this.runtime.cancelContinuationWork();
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
@@ -138,7 +144,13 @@ export class GoalCommandController {
 				if (existingGoal) {
 					this.runtime.queuedGoals = existingQueuedGoals;
 					this.runtime.recordGoalUsage(existingGoal, ctx);
-					if (existingGoal.status === "active") {
+					if (existingGoal.status === "active" && existingGoal.waiting) {
+						this.runtime.activeGoal = existingGoal;
+						this.runtime.clearStaleGoalToolCallBlock();
+						this.runtime.persistGoal(existingGoal);
+						this.runtime.updateStatus(ctx, existingGoal);
+						this.runtime.restoreGoalWaitTimer(ctx);
+					} else if (existingGoal.status === "active") {
 						this.runtime.stopActiveGoal(ctx, {
 							kind: "activation_rollback",
 							expectedGoalId: startedGoal.id,
@@ -218,6 +230,7 @@ export class GoalCommandController {
 			await this.startGoal(objective, tokenBudget, ctx);
 			return;
 		}
+		this.runtime.clearGoalWaitTimer();
 		this.runtime.cancelContinuationWork();
 		this.runtime.pendingQueueAction = { kind: "prioritize", objective, tokenBudget };
 		this.runtime.persistGoal(this.runtime.activeGoal);
@@ -261,6 +274,7 @@ export class GoalCommandController {
 			return;
 		}
 		if (currentGoal.status === "active") this.runtime.recordGoalUsage(currentGoal, ctx);
+		this.runtime.clearGoalWaitTimer();
 		this.runtime.cancelContinuationWork();
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
@@ -287,6 +301,7 @@ export class GoalCommandController {
 		if (this.runtime.activeGoal) {
 			if (
 				this.runtime.activeGoal.status === "active" &&
+				!this.runtime.activeGoal.waiting &&
 				this.runtime.activeGoal.activeStartedAt === undefined
 			) {
 				const now = Date.now();
@@ -295,6 +310,7 @@ export class GoalCommandController {
 			}
 			this.runtime.persistGoal(this.runtime.activeGoal);
 			this.runtime.updateStatus(ctx, this.runtime.activeGoal);
+			this.runtime.restoreGoalWaitTimer(ctx);
 		} else {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
@@ -442,6 +458,10 @@ export class GoalCommandController {
 			notifyTerminal(ctx.ui, "No active goal.", "info");
 			return;
 		}
+		if (this.runtime.activeGoal.status === "active" && this.runtime.activeGoal.waiting) {
+			await this.resumeWaitingGoal(ctx);
+			return;
+		}
 		if (!isResumableGoalStatus(this.runtime.activeGoal.status)) {
 			notifyTerminal(
 				ctx.ui,
@@ -520,6 +540,35 @@ export class GoalCommandController {
 		);
 	}
 
+	private async resumeWaitingGoal(ctx: StatusContext) {
+		const waitingGoal = this.runtime.activeGoal;
+		const waiting = waitingGoal?.waiting;
+		if (waitingGoal?.status !== "active" || !waiting) return;
+		try {
+			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+		} catch (error) {
+			notifyTerminal(ctx.ui, `Cannot resume /goal: ${formatError(error)}`, "error");
+			return;
+		}
+		if (!this.runtime.clearGoalWait(ctx, waitingGoal.id)) return;
+		const resumedGoal = this.runtime.activeGoal;
+		if (!resumedGoal || resumedGoal.id !== waitingGoal.id || resumedGoal.status !== "active")
+			return;
+		const sent = await this.runtime.sendOwnedGoalPrompt(
+			ctx,
+			resumedGoal.id,
+			buildWaitingResumePrompt(resumedGoal, waiting.reason),
+			false,
+		);
+		if (!sent) {
+			if (this.runtime.activeGoal?.id === waitingGoal.id) {
+				this.runtime.enterGoalWait(ctx, waitingGoal.id, waiting);
+			}
+			return;
+		}
+		notifyTerminal(ctx.ui, `Goal resumed from waiting: ${waitingGoal.text}`, "info");
+	}
+
 	clearGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
 			notifyTerminal(ctx.ui, "No active goal.", "info");
@@ -550,6 +599,7 @@ export class GoalCommandController {
 
 		this.runtime.recordGoalUsage(this.runtime.activeGoal, ctx);
 		const previousGoal = { ...this.runtime.activeGoal };
+		this.runtime.clearGoalWaitTimer();
 		this.runtime.cancelContinuationWork();
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
@@ -560,6 +610,7 @@ export class GoalCommandController {
 				...rotatedGoal,
 				text: objective,
 				tokenBudget: tokenBudget ?? this.runtime.activeGoal.tokenBudget,
+				waiting: undefined,
 			},
 			editedGoalStatus(previousStatus),
 		);
@@ -594,7 +645,13 @@ export class GoalCommandController {
 			);
 			if (!sent) {
 				if (this.runtime.activeGoal?.id === editedGoal.id) {
-					if (previousStatus === "active") {
+					if (previousStatus === "active" && previousGoal.waiting) {
+						this.runtime.activeGoal = previousGoal;
+						this.runtime.clearStaleGoalToolCallBlock();
+						this.runtime.persistGoal(previousGoal);
+						this.runtime.updateStatus(ctx, previousGoal);
+						this.runtime.restoreGoalWaitTimer(ctx);
+					} else if (previousStatus === "active") {
 						this.runtime.stopActiveGoal(ctx, {
 							kind: "activation_rollback",
 							expectedGoalId: editedGoal.id,
@@ -725,7 +782,13 @@ export class GoalCommandController {
 		);
 		if (!sent && this.runtime.activeGoal.id === prioritized.id) {
 			this.runtime.queuedGoals = previousQueue;
-			if (previousGoal.status === "active") {
+			if (previousGoal.status === "active" && previousGoal.waiting) {
+				this.runtime.activeGoal = previousGoal;
+				this.runtime.clearStaleGoalToolCallBlock();
+				this.runtime.persistGoal(previousGoal);
+				this.runtime.updateStatus(ctx, previousGoal);
+				this.runtime.restoreGoalWaitTimer(ctx);
+			} else if (previousGoal.status === "active") {
 				this.runtime.stopActiveGoal(ctx, {
 					kind: "activation_rollback",
 					expectedGoalId: prioritized.id,

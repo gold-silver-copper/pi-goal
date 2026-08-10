@@ -7,6 +7,7 @@ import {
 	normalizeTokenBudget,
 } from "./accounting.js";
 import type { GoalStatus } from "./prompts.js";
+import { type GoalWait, normalizeGoalWait } from "./wait.js";
 
 const GOAL_STATE_ENTRY_TYPE = "goal-state";
 const LEGACY_GOALS_STATE_ENTRY_TYPE = "goals-state";
@@ -31,6 +32,7 @@ export interface ActiveGoal {
 	lastToolFreeOutputFingerprint?: string;
 	safetyPauseCause?: SafetyPauseCause;
 	safetyResetPending?: boolean;
+	waiting?: GoalWait;
 }
 
 export type PendingQueueAction =
@@ -219,6 +221,7 @@ function normalizeQueuedGoal(goal: ActiveGoal): ActiveGoal {
 
 export function normalizeLoadedGoal(goal: ActiveGoal): ActiveGoal {
 	const now = Date.now();
+	const waiting = goal.status === "active" ? normalizeGoalWait(goal.waiting) : undefined;
 	return {
 		...goal,
 		startedAt: isNonNegativeFiniteNumber(goal.startedAt) ? goal.startedAt : now,
@@ -228,12 +231,13 @@ export function normalizeLoadedGoal(goal: ActiveGoal): ActiveGoal {
 		tokensUsed: nonNegativeFiniteNumber(goal.tokensUsed),
 		timeUsedSeconds: nonNegativeFiniteNumber(goal.timeUsedSeconds),
 		baselineTokens: nonNegativeFiniteNumber(goal.baselineTokens),
-		activeStartedAt: goal.status === "active" ? now : undefined,
+		activeStartedAt: goal.status === "active" && !waiting ? now : undefined,
 		automaticModelTurns: normalizeSafetyCounter(goal.automaticModelTurns),
 		toolFreeRepeatCount: normalizeSafetyCounter(goal.toolFreeRepeatCount),
 		lastToolFreeOutputFingerprint: normalizeOutputFingerprint(goal.lastToolFreeOutputFingerprint),
 		safetyPauseCause: normalizeSafetyPauseCause(goal.safetyPauseCause),
 		safetyResetPending: goal.safetyResetPending === true ? true : undefined,
+		waiting,
 	};
 }
 

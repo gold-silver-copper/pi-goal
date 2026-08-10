@@ -339,6 +339,7 @@ test("after-first-goal resume can restore tools after a restrictive mode exits",
 		"bash",
 		"goal_complete",
 		"goal_blocked",
+		"goal_wait",
 	]);
 });
 

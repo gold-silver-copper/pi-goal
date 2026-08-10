@@ -222,6 +222,55 @@ test("malformed persisted safety fields reset without discarding the goal", () =
 	assert.equal(loaded.goal?.safetyPauseCause, undefined);
 });
 
+test("canonical persistence restores valid waiting and excludes waiting wall time", () => {
+	const resumeAt = Date.now() + 60_000;
+	const loaded = loadGoalStateFromSession(
+		branch({
+			customType: "goal-state",
+			data: {
+				goal: {
+					...active,
+					activeStartedAt: Date.now() - 10_000,
+					waiting: { reason: "  Waiting for review  ", resumeAt },
+				},
+			},
+		}),
+	);
+
+	assert.deepEqual(loaded.goal?.waiting, { reason: "Waiting for review", resumeAt });
+	assert.equal(loaded.goal?.activeStartedAt, undefined);
+});
+
+test("malformed or non-active waiting metadata is dropped without discarding the goal", () => {
+	for (const waiting of [
+		null,
+		{},
+		{ reason: "   " },
+		{ reason: "Wait", resumeAt: -1 },
+		{ reason: "Wait", resumeAt: 1.5 },
+		{ reason: "Wait", resumeAt: Number.MAX_SAFE_INTEGER },
+		{ reason: "x".repeat(1_001) },
+	]) {
+		const loaded = loadGoalStateFromSession(
+			branch({
+				customType: "goal-state",
+				data: { goal: { ...active, waiting } },
+			}),
+		);
+		assert.equal(loaded.goal?.text, "active");
+		assert.equal(loaded.goal?.waiting, undefined);
+	}
+
+	const queuedWithWait = loadGoalStateFromSession(
+		branch({
+			customType: "goal-state",
+			data: { goal: { ...queued, waiting: { reason: "stale queue wait" } } },
+		}),
+	);
+	assert.equal(queuedWithWait.goal?.status, "queued");
+	assert.equal(queuedWithWait.goal?.waiting, undefined);
+});
+
 test("malformed canonical or plural queue state fails closed", () => {
 	for (const [customType, data] of [
 		["goal-state", { goal: { ...active, id: "" } }],

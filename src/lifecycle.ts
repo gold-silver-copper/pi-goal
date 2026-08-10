@@ -43,6 +43,7 @@ export function registerGoalLifecycle(
 		runtime.replaceMenuSession();
 		runtime.clearCompletionStatusTimer();
 		runtime.clearContinuationTracking();
+		runtime.clearGoalWaitTimer();
 		runtime.clearPendingGoalPrompts();
 		runtime.clearAgentRun();
 		runtime.guardAbortGoalId = undefined;
@@ -126,6 +127,7 @@ export function registerGoalLifecycle(
 			}
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
+			runtime.restoreGoalWaitTimer(ctx);
 			if (startRestoredQueuedGoal) {
 				const restoredGoal = runtime.activeGoal;
 				const sent = await runtime.sendOwnedGoalPrompt(
@@ -152,6 +154,7 @@ export function registerGoalLifecycle(
 	pi.on("session_shutdown", (_event, ctx) => {
 		runController.unbindSession();
 		runtime.closeMenuSession();
+		runtime.clearGoalWaitTimer();
 		if (runtime.activeGoal) {
 			if (!runtime.queueFrozen && runtime.activeGoal.status === "active") {
 				runtime.recordGoalUsage(runtime.activeGoal, ctx, false);
@@ -230,6 +233,7 @@ export function registerGoalLifecycle(
 	pi.on("input", (event, ctx) => {
 		if (event.source === "extension") {
 			if (
+				runtime.consumeCancelledGoalPrompt(event.text) ||
 				runtime.consumeCancelledContinuationPrompt(event.text) ||
 				runtime.consumeStaleOwnedGoalPrompt(event.text)
 			) {
@@ -239,7 +243,9 @@ export function registerGoalLifecycle(
 			// Streaming input is queued before its model work starts. Keep owned
 			// markers pending for message_start, and track non-goal delivery mode so a
 			// steer cannot consume a later follow-up's cleanup protection.
-			if (runtime.hasPendingOwnedGoalPrompt(event.text)) return;
+			if (runtime.acceptExactOwnedInput(event.text)) return;
+			runtime.supersedeOwnedInputCollision(event.text);
+			if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 			if (event.streamingBehavior === "steer" || event.streamingBehavior === "followUp") {
 				runtime.noteQueuedNonGoalInput(event.text, event.streamingBehavior);
 			}
@@ -248,6 +254,7 @@ export function registerGoalLifecycle(
 		}
 		if (runtime.queueFrozen) return;
 		if (/^\/goal(?:\s|$)/u.test(event.text.trimStart())) return;
+		if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 		if (event.streamingBehavior === "followUp") {
 			runtime.noteQueuedNonGoalInput(event.text, "followUp", true);
 			return;
@@ -273,6 +280,7 @@ export function registerGoalLifecycle(
 		}
 		if (message.role === "custom") {
 			if (runtime.isActiveBudgetWrapUpMessage(message)) return;
+			if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 			if (runtime.guardAbortGoalId === runtime.activeGoal?.id) {
 				runtime.guardAbortGoalId = undefined;
 			}
@@ -416,6 +424,10 @@ export function registerGoalLifecycle(
 				);
 		if (queuedNonGoalInput?.behavior === "followUp") {
 			beginNonGoalFollowUp(ctx, queuedNonGoalInput.resetSafetyEpoch);
+		}
+		if (!ownedPromptGoalId && !ownedPromptBoundary) {
+			runtime.supersedeOwnedInputCollision(event.prompt);
+			if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 		}
 		const runOrigin = continuationGoalId
 			? "automatic"
@@ -617,7 +629,10 @@ export function registerGoalLifecycle(
 		if (runtime.pendingQueueAction) {
 			dispatchedQueueAction = await commands.dispatchPendingQueueActionIfSettled(ctx);
 		}
-		if (!dispatchedQueueAction) runtime.dispatchContinuationIfSettled(ctx);
+		if (!dispatchedQueueAction) {
+			const resumedWait = runtime.dispatchDueGoalWait(ctx);
+			if (!resumedWait) runtime.dispatchContinuationIfSettled(ctx);
+		}
 		runtime.clearSettledSafetyTracking();
 	});
 

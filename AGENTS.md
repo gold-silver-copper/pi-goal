@@ -8,6 +8,9 @@
 - Record a tool-using turn's final usage at `tool_execution_end`, with `agent_end` as the no-tool fallback.
 - Activate completed-goal successors and busy priority changes only at the settled idle boundary, and persist pending priority intent across reload.
 - Classify only explicit quota, subscription, credit, or billing exhaustion as `usage_limited`; do not include rate limits, HTTP 429, or server failures.
+- Keep external waits canonically active but continuation-ineligible, and exclude their quiet wall time from active elapsed accounting.
+- Route wait deadlines through the settled continuation dispatcher, bind timers to exact session and Goal identity, and cancel them on every superseding transition and shutdown.
+- Treat an extension message as Goal-owned only when its exact accepted prompt fingerprint or an accepted transformed-prompt boundary matches; quoted markers in external messages must still wake waiting work.
 
 ## Ownership and recovery
 

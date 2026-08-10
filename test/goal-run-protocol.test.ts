@@ -68,7 +68,7 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function registerGoal(mock: ReturnType<typeof createMockPi>, settingsPath = ENABLED_SETTINGS_PATH) {
 	mock.rawPi.setActiveTools([
-		...new Set([...mock.rawPi.getActiveTools(), "goal_complete", "goal_blocked"]),
+		...new Set([...mock.rawPi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait"]),
 	]);
 	goal(mock.pi, { settingsPath });
 }
