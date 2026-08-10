@@ -105,10 +105,12 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
 	assert.equal(waitParameters?.properties?.resume_after_ms?.minimum, 1);
 	assert.equal(waitParameters?.properties?.resume_after_ms?.maximum, 2_147_483_647);
 	assert.match(String(waitDefinition?.description), /external event.*call goal_wait alone/is);
-	assert.match(
-		String((waitDefinition?.promptGuidelines as string[] | undefined)?.join(" ")),
-		/arrange the external monitor.*goal_wait alone/is,
+	assert.match(String(waitDefinition?.description), /below 10000ms.*clamped/is);
+	const waitGuidelines = String(
+		(waitDefinition?.promptGuidelines as string[] | undefined)?.join(" "),
 	);
+	assert.match(waitGuidelines, /arrange the external monitor.*goal_wait alone/is);
+	assert.match(waitGuidelines, /prefer longer waits.*minutes.*busy polling/is);
 	assert.deepEqual([...mock.events.keys()].sort(), [
 		"agent_end",
 		"agent_settled",

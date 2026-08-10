@@ -233,7 +233,7 @@ goal_wait({
 })
 ```
 
-`goal_id` must match the current active Goal, `reason` must contain 1–1,000 characters, and the optional `resume_after_ms` must be a whole number from 1 through 2,147,483,647. The deadline is a safety wake-up rather than a polling interval. Omitting it intentionally permits an indefinite quiet wait.
+`goal_id` must match the current active Goal, `reason` must contain 1–1,000 characters, and the optional `resume_after_ms` must be a whole number from 1 through 2,147,483,647. The deadline is a safety wake-up rather than a polling interval. Requests below 10,000 milliseconds are accepted for compatibility but clamped to an effective 10,000-millisecond deadline; the tool result reports both the requested and effective values. Prefer deadlines measured in minutes instead of repeated short wakes. Omitting `resume_after_ms` intentionally permits an indefinite quiet wait.
 
 An accepted call keeps the canonical Goal status active, checkpoints active elapsed time, cancels pending continuation work, persists the reason and absolute optional deadline, and terminates the normal single-tool run. Call `goal_wait` alone because Pi only guarantees early termination when every finalized result in a parallel tool batch terminates.
 
@@ -241,7 +241,7 @@ Interactive input, RPC input, another extension's `sendUserMessage()` input, and
 
 After a waking turn ends, ordinary continuation rules apply again. The agent can complete or block the Goal, continue working, or call `goal_wait` again after arranging the next wake source. `/goal resume` also clears waiting and sends one manual resume prompt without resetting cumulative usage or the safety epoch. `/goal pause`, clear, edit, replace, completion, blocking, terminal limits, tool loss, queue displacement, session replacement, and shutdown cancel the in-memory deadline owner.
 
-A future deadline is restored from its absolute timestamp after reload. An already-due deadline waits for Pi's settled, idle, no-pending-message boundary and then requests exactly one continuation through the normal dispatcher. If that delivery throws, pi-goal restores the wait, retries once after one second, and leaves the Goal visibly waiting after a second failure instead of retry-looping. A deadline never sends a prompt directly from a stale timer.
+A future deadline is restored from its absolute timestamp after reload. Reload never restarts, extends, or newly clamps an already-persisted absolute deadline, including a short deadline written by an older version. An already-due deadline waits for Pi's settled, idle, no-pending-message boundary and then requests exactly one continuation through the normal dispatcher. If that delivery throws, pi-goal restores the wait, retries once after one second, and leaves the Goal visibly waiting after a second failure instead of retry-looping. A deadline never sends a prompt directly from a stale timer.
 
 Waiting time is excluded from **Active elapsed**, while tokens, iteration, automatic-response count, no-progress state, queue data, and managed-run ownership remain preserved. The managed-run protocol continues reporting `active` because waiting is non-terminal. When an experimental priority Goal displaces a waiting head, the shelved Goal loses its wait so later reactivation performs a fresh external-state check.
 

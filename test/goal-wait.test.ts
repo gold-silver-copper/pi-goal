@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
+import { MAX_GOAL_WAIT_DELAY_MS, MIN_GOAL_WAIT_DELAY_MS } from "../src/wait.js";
 import {
 	lastGoal,
 	requireGoalTool,
@@ -274,6 +275,7 @@ test("goal_wait validates stale ownership, reason, deadline, and duplicate waits
 		[{ goal_id: "stale", reason: "Wait" }, /goal_id does not match/i],
 		[{ goal_id: goal.id, reason: "   " }, /reason is empty/i],
 		[{ goal_id: goal.id, reason: "x".repeat(1_001) }, /reason is too long/i],
+		[{ goal_id: goal.id, reason: "Wait", resume_after_ms: -1 }, /whole number/i],
 		[{ goal_id: goal.id, reason: "Wait", resume_after_ms: 0 }, /whole number/i],
 		[{ goal_id: goal.id, reason: "Wait", resume_after_ms: 1.5 }, /whole number/i],
 		[{ goal_id: goal.id, reason: "Wait", resume_after_ms: 2_147_483_648 }, /whole number/i],
@@ -307,6 +309,144 @@ test("goal_wait validates stale ownership, reason, deadline, and duplicate waits
 	assert.equal(requireLastGoal(waiting.mock).waiting?.reason, "First wait");
 });
 
+test("goal_wait clamps sub-ten-second deadlines and reports the effective delay", async () => {
+	for (const requestedMs of [1, MIN_GOAL_WAIT_DELAY_MS - 1]) {
+		const waiting = await startGoalForTest();
+		const goal = requireLastGoal(waiting.mock);
+		const result = await requireGoalTool(waiting.mock, "goal_wait").execute(
+			`wait-clamped-${requestedMs}`,
+			{
+				goal_id: goal.id,
+				reason: "Waiting without busy polling",
+				resume_after_ms: requestedMs,
+			},
+			new AbortController().signal,
+			() => undefined,
+			waiting.ctx,
+		);
+
+		assert.deepEqual(result.details, {
+			goal: goal.text,
+			goal_id: goal.id,
+			reason: "Waiting without busy polling",
+			requested_resume_after_ms: requestedMs,
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+			resume_at: Date.now() + MIN_GOAL_WAIT_DELAY_MS,
+		});
+		assert.match(
+			result.content?.[0]?.text ?? "",
+			new RegExp(`requested.*${requestedMs}.*clamped.*${MIN_GOAL_WAIT_DELAY_MS}`, "is"),
+		);
+		assert.equal(
+			requireLastGoal(waiting.mock).waiting?.resumeAt,
+			Date.now() + MIN_GOAL_WAIT_DELAY_MS,
+		);
+
+		await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS - 1);
+		assert.equal(waiting.mock.sentUserMessages.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(waiting.mock.sentUserMessages.length, 2);
+		assert.equal(requireLastGoal(waiting.mock).waiting, undefined);
+		await vi.runOnlyPendingTimersAsync();
+		assert.equal(waiting.mock.sentUserMessages.length, 2);
+	}
+});
+
+test("goal_wait preserves valid effective deadlines and deadline-free waits", async () => {
+	for (const resumeAfterMs of [10_000, 10_001, MAX_GOAL_WAIT_DELAY_MS, undefined] as const) {
+		const waiting = await startGoalForTest();
+		const goal = requireLastGoal(waiting.mock);
+		const result = await requireGoalTool(waiting.mock, "goal_wait").execute(
+			`wait-${resumeAfterMs ?? "indefinite"}`,
+			{
+				goal_id: goal.id,
+				reason: "Waiting at a safe interval",
+				...(resumeAfterMs === undefined ? {} : { resume_after_ms: resumeAfterMs }),
+			},
+			new AbortController().signal,
+			() => undefined,
+			waiting.ctx,
+		);
+		const details = result.details as {
+			requested_resume_after_ms?: number;
+			resume_after_ms?: number;
+			resume_at?: number;
+		};
+
+		assert.equal(details.requested_resume_after_ms, undefined);
+		assert.equal(details.resume_after_ms, resumeAfterMs);
+		assert.equal(
+			details.resume_at,
+			resumeAfterMs === undefined ? undefined : Date.now() + resumeAfterMs,
+		);
+		assert.equal(requireLastGoal(waiting.mock).waiting?.resumeAt, details.resume_at);
+		assert.doesNotMatch(result.content?.[0]?.text ?? "", /clamped/i);
+	}
+});
+
+test("external input cancels a clamped deadline without a stale continuation", async () => {
+	const waiting = await startGoalForTest();
+	const goal = requireLastGoal(waiting.mock);
+	await requireGoalTool(waiting.mock, "goal_wait").execute(
+		"wait-clamped-external-wake",
+		{
+			goal_id: goal.id,
+			reason: "Waiting for an external wake before the clamped deadline",
+			resume_after_ms: 1,
+		},
+		new AbortController().signal,
+		() => undefined,
+		waiting.ctx,
+	);
+
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS / 2);
+	waiting.mock.events.get("input")?.[0]?.(
+		{ source: "extension", text: "external wake", streamingBehavior: "followUp" },
+		waiting.ctx,
+	);
+	assert.equal(requireLastGoal(waiting.mock).waiting, undefined);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
+	assert.equal(waiting.mock.sentUserMessages.length, 1);
+});
+
+test("clamp output sanitizes terminal controls and remains bounded", async () => {
+	const waiting = await startGoalForTest();
+	const goal = requireLastGoal(waiting.mock);
+	const result = await requireGoalTool(waiting.mock, "goal_wait").execute(
+		"wait-clamped-output",
+		{
+			goal_id: goal.id,
+			reason: `Waiting ${"\u001b]0;unsafe\u0007"}${"x".repeat(900)}`,
+			resume_after_ms: 1,
+		},
+		new AbortController().signal,
+		() => undefined,
+		waiting.ctx,
+	);
+	const text = result.content?.[0]?.text ?? "";
+
+	assert.equal(text.includes("\u001b"), false);
+	assert.equal(text.includes("\u0007"), false);
+	assert.ok(Buffer.byteLength(text, "utf8") <= 50 * 1024);
+	assert.match(text, /clamped to 10000/i);
+});
+
+test("restoring a persisted short absolute deadline does not extend it to the new floor", async () => {
+	const stored = createGoal("restore legacy short wait", undefined, 0);
+	stored.waiting = {
+		reason: "Legacy short deadline",
+		resumeAt: Date.now() + 100,
+	};
+	stored.activeStartedAt = undefined;
+	const restored = restoreStoredGoalForTest(stored);
+
+	await vi.advanceTimersByTimeAsync(99);
+	assert.equal(restored.mock.sentUserMessages.length, 0);
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(restored.mock.sentUserMessages.length, 1);
+	assert.equal(requireLastGoal(restored.mock).waiting, undefined);
+});
+
 test("goal_wait deadline dispatches exactly one continuation through settled gates", async () => {
 	const waiting = await startGoalForTest();
 	const goal = requireLastGoal(waiting.mock);
@@ -315,7 +455,7 @@ test("goal_wait deadline dispatches exactly one continuation through settled gat
 		{
 			goal_id: goal.id,
 			reason: "Waiting for a bounded monitor",
-			resume_after_ms: 1_000,
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
 		},
 		new AbortController().signal,
 		() => undefined,
@@ -329,7 +469,7 @@ test("goal_wait deadline dispatches exactly one continuation through settled gat
 	);
 	assert.match(
 		waiting.notifications.at(-1)?.message ?? "",
-		/Resume deadline: 2026-08-10T00:00:01.000Z/i,
+		/Resume deadline: 2026-08-10T00:00:10.000Z/i,
 	);
 	await waiting.mock.events.get("agent_end")?.[0]?.(
 		{ messages: [{ role: "assistant", stopReason: "toolUse" }] },
@@ -338,7 +478,7 @@ test("goal_wait deadline dispatches exactly one continuation through settled gat
 	await waiting.mock.events.get("agent_settled")?.[0]?.({}, waiting.ctx);
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 
-	await vi.advanceTimersByTimeAsync(999);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS - 1);
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 	await vi.advanceTimersByTimeAsync(1);
 	assert.equal(waiting.mock.sentUserMessages.length, 2);
@@ -354,7 +494,11 @@ test("a failed deadline delivery restores waiting and retries exactly once", asy
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-retry",
-		{ goal_id: goal.id, reason: "Waiting for retry", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting for retry",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
@@ -364,7 +508,7 @@ test("a failed deadline delivery restores waiting and retries exactly once", asy
 		throw new Error("deadline delivery failed");
 	};
 
-	await vi.advanceTimersByTimeAsync(100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 	assert.equal(requireLastGoal(waiting.mock).waiting?.reason, "Waiting for retry");
 	assert.equal(requireLastGoal(waiting.mock).activeStartedAt, undefined);
@@ -384,7 +528,11 @@ test("two failed deadline deliveries leave a visible wait without retry looping"
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-retry-exhausted",
-		{ goal_id: goal.id, reason: "Waiting after retry failure", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting after retry failure",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
@@ -393,7 +541,7 @@ test("two failed deadline deliveries leave a visible wait without retry looping"
 		throw new Error("deadline delivery failed");
 	};
 
-	await vi.advanceTimersByTimeAsync(1_100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS + 1_000);
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 	assert.equal(requireLastGoal(waiting.mock).waiting?.reason, "Waiting after retry failure");
 	await vi.advanceTimersByTimeAsync(10_000);
@@ -408,12 +556,16 @@ test("a deadline that expires while busy waits for the next settled idle boundar
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-busy",
-		{ goal_id: goal.id, reason: "Waiting while busy", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting while busy",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
 	);
-	await vi.advanceTimersByTimeAsync(100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 	assert.ok(requireLastGoal(waiting.mock).waiting);
 
@@ -453,13 +605,17 @@ test("shutdown cancels a waiting deadline without discarding persisted waiting s
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-shutdown",
-		{ goal_id: goal.id, reason: "Waiting through reload", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting through reload",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
 	);
 	await waiting.mock.events.get("session_shutdown")?.[0]?.({}, waiting.ctx);
-	await vi.advanceTimersByTimeAsync(100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 
 	assert.equal(waiting.mock.sentUserMessages.length, 1);
 	assert.equal(lastGoal(waiting.mock)?.waiting?.reason, "Waiting through reload");
@@ -471,7 +627,11 @@ test("pause, clear, edit, completion, and blocking cancel waiting deadlines", as
 		const goal = requireLastGoal(waiting.mock);
 		await requireGoalTool(waiting.mock, "goal_wait").execute(
 			`wait-${action}`,
-			{ goal_id: goal.id, reason: `Waiting before ${action}`, resume_after_ms: 100 },
+			{
+				goal_id: goal.id,
+				reason: `Waiting before ${action}`,
+				resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+			},
 			new AbortController().signal,
 			() => undefined,
 			waiting.ctx,
@@ -506,7 +666,7 @@ test("pause, clear, edit, completion, and blocking cancel waiting deadlines", as
 
 		const messagesAfterAction = waiting.mock.sentUserMessages.length;
 		assert.equal(lastGoal(waiting.mock)?.waiting, undefined, action);
-		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 		assert.equal(waiting.mock.sentUserMessages.length, messagesAfterAction, action);
 	}
 });
@@ -517,7 +677,11 @@ test("failed edit and replacement delivery restore the exact waiting goal and de
 		const goal = requireLastGoal(waiting.mock);
 		await requireGoalTool(waiting.mock, "goal_wait").execute(
 			"wait-rollback",
-			{ goal_id: goal.id, reason: "Waiting before failed delivery", resume_after_ms: 100 },
+			{
+				goal_id: goal.id,
+				reason: "Waiting before failed delivery",
+				resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+			},
 			new AbortController().signal,
 			() => undefined,
 			waiting.ctx,
@@ -532,11 +696,11 @@ test("failed edit and replacement delivery restore the exact waiting goal and de
 		assert.equal(restored.id, goal.id);
 		assert.deepEqual(restored.waiting, {
 			reason: "Waiting before failed delivery",
-			resumeAt: Date.now() + 100,
+			resumeAt: Date.now() + MIN_GOAL_WAIT_DELAY_MS,
 		});
 
 		waiting.mock.rawPi.sendUserMessage = sendUserMessage;
-		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 		assert.equal(waiting.mock.sentUserMessages.length, 2);
 	}
 });
@@ -548,7 +712,11 @@ test("failed priority delivery restores the waiting head and its deadline", asyn
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-priority-rollback",
-		{ goal_id: goal.id, reason: "Waiting before failed priority", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting before failed priority",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
@@ -563,7 +731,7 @@ test("failed priority delivery restores the waiting head and its deadline", asyn
 	assert.equal(requireLastGoal(waiting.mock).waiting?.reason, "Waiting before failed priority");
 
 	waiting.mock.rawPi.sendUserMessage = sendUserMessage;
-	await vi.advanceTimersByTimeAsync(100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 	assert.equal(waiting.mock.sentUserMessages.length, 2);
 });
 
@@ -574,7 +742,11 @@ test("priority displacement cancels waiting before shelving the old goal", async
 	const goal = requireLastGoal(waiting.mock);
 	await requireGoalTool(waiting.mock, "goal_wait").execute(
 		"wait-priority",
-		{ goal_id: goal.id, reason: "Waiting before priority", resume_after_ms: 100 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting before priority",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		waiting.ctx,
@@ -588,7 +760,7 @@ test("priority displacement cancels waiting before shelving the old goal", async
 	assert.equal(state?.goal?.text, "urgent goal");
 	assert.equal(state?.queue?.[0]?.waiting, undefined);
 	const messagesAfterPriority = waiting.mock.sentUserMessages.length;
-	await vi.advanceTimersByTimeAsync(100);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 	assert.equal(waiting.mock.sentUserMessages.length, messagesAfterPriority);
 });
 
@@ -597,7 +769,11 @@ test("session restore keeps a waiting deadline absolute and wakes once", async (
 	const goal = requireLastGoal(original.mock);
 	await requireGoalTool(original.mock, "goal_wait").execute(
 		"wait-restore",
-		{ goal_id: goal.id, reason: "Waiting across reload", resume_after_ms: 1_000 },
+		{
+			goal_id: goal.id,
+			reason: "Waiting across reload",
+			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
+		},
 		new AbortController().signal,
 		() => undefined,
 		original.ctx,
@@ -608,7 +784,7 @@ test("session restore keeps a waiting deadline absolute and wakes once", async (
 	await vi.advanceTimersByTimeAsync(400);
 	const restored = restoreStoredGoalForTest(stored);
 	assert.equal(restored.mock.sentUserMessages.length, 0);
-	await vi.advanceTimersByTimeAsync(599);
+	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS - 401);
 	assert.equal(restored.mock.sentUserMessages.length, 0);
 	await vi.advanceTimersByTimeAsync(1);
 	assert.equal(restored.mock.sentUserMessages.length, 1);

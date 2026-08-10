@@ -124,6 +124,8 @@ export function assertHardenedGoalPrompt(prompt: string) {
 	assert.match(prompt, /resumed.*fresh three-turn blocker audit/is);
 	assert.match(prompt, /hard, slow, uncertain.*recoverable/is);
 	assert.match(prompt, /arrange a non-goal wake message.*goal_wait.*exact current goal_id/is);
+	assert.match(prompt, /prefer longer goal_wait deadlines.*minutes.*busy polling/is);
+	assert.match(prompt, /below 10000ms.*clamped.*omitting resume_after_ms.*quiet/is);
 	assert.match(prompt, /goal_wait alone.*parallel sibling tools/is);
 	assert.match(prompt, /goal_blocked.*recoverable external wait/is);
 }

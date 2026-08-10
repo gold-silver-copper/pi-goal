@@ -20,7 +20,13 @@ import {
 	transitionGoal,
 	truncateNotification,
 } from "./runtime.js";
-import { createGoalWait, MAX_GOAL_WAIT_DELAY_MS, MAX_GOAL_WAIT_REASON_LENGTH } from "./wait.js";
+import {
+	createGoalWait,
+	MAX_GOAL_WAIT_DELAY_MS,
+	MAX_GOAL_WAIT_REASON_LENGTH,
+	MIN_GOAL_WAIT_DELAY_MS,
+	resolveGoalWaitDelay,
+} from "./wait.js";
 
 interface GoalCompleteDetails {
 	goal: string;
@@ -40,6 +46,7 @@ interface GoalWaitDetails {
 	goal: string;
 	goal_id: string;
 	reason: string;
+	requested_resume_after_ms?: number;
 	resume_after_ms?: number;
 	resume_at?: number;
 }
@@ -312,12 +319,12 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 	const goalWaitTool = defineTool({
 		name: GOAL_WAIT_TOOL,
 		label: "Goal Wait",
-		description:
-			"Keep the active /goal alive but quiet while an external event is expected. Call goal_wait alone after arranging a wake message, or provide resume_after_ms as a safety deadline. Do not use it for ordinary unfinished work.",
+		description: `Keep the active /goal alive but quiet while an external event is expected. Call goal_wait alone after arranging a wake message, or provide resume_after_ms as a safety deadline. Requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms. Do not use it for ordinary unfinished work.`,
 		promptSnippet:
 			"Wait quietly for an external event without stopping the active /goal or starting automatic continuations",
 		promptGuidelines: [
-			"Use goal_wait only when progress depends on a later non-goal message, or when resume_after_ms provides a bounded wake-up.",
+			"Use goal_wait only when progress depends on a later non-goal message, or when resume_after_ms provides a bounded safety wake-up rather than a polling interval.",
+			`Prefer longer waits measured in minutes to avoid busy polling; goal_wait requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms.`,
 			"Arrange the external monitor or wake source before calling goal_wait, and call goal_wait alone because parallel sibling tools can prevent immediate turn termination.",
 			"Pass the exact current goal_id so a stale turn cannot put a replacement goal into waiting.",
 			"Do not use goal_blocked for a recoverable external wait that can be resumed by a message or deadline.",
@@ -337,8 +344,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				Type.Integer({
 					minimum: 1,
 					maximum: MAX_GOAL_WAIT_DELAY_MS,
-					description:
-						"Optional safety deadline in milliseconds that requests one continuation if no wake message arrives.",
+					description: `Optional safety deadline in milliseconds that requests one continuation if no wake message arrives. Values below ${MIN_GOAL_WAIT_DELAY_MS} are accepted but clamped to ${MIN_GOAL_WAIT_DELAY_MS}.`,
 				}),
 			),
 		}),
@@ -380,13 +386,26 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 				return reject(`resume_after_ms must be a whole number from 1 to ${MAX_GOAL_WAIT_DELAY_MS}`);
 			}
 
+			const { requestedMs, effectiveMs } = resolveGoalWaitDelay(resumeAfterMs);
 			const waiting = createGoalWait(reason, resumeAfterMs);
 			const waitingGoal = runtime.enterGoalWait(ctx, activeGoal.id, waiting);
 			if (!waitingGoal) return reject("active goal changed before waiting transition");
+			const clamped = requestedMs !== undefined && effectiveMs !== requestedMs;
 			notifyTerminal(ctx.ui, `Goal waiting: ${truncateNotification(reason)}`, "info");
 			return {
-				content: toolContent(`Goal waiting: ${reason}`),
-				details: waitDetails(goal, requestedGoalId, reason, resumeAfterMs, waiting.resumeAt),
+				content: toolContent(
+					clamped
+						? `Goal waiting: ${reason}\nRequested resume_after_ms ${requestedMs} was clamped to ${effectiveMs}.`
+						: `Goal waiting: ${reason}`,
+				),
+				details: waitDetails(
+					goal,
+					requestedGoalId,
+					reason,
+					effectiveMs,
+					waiting.resumeAt,
+					clamped ? requestedMs : undefined,
+				),
 				terminate: true,
 			};
 		},
@@ -439,11 +458,15 @@ function waitDetails(
 	reason: string,
 	resumeAfterMs: number | undefined,
 	resumeAt?: number,
+	requestedResumeAfterMs?: number,
 ): GoalWaitDetails {
 	return {
 		goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
 		goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
 		reason: reason.slice(0, MAX_GOAL_WAIT_REASON_LENGTH),
+		...(requestedResumeAfterMs === undefined
+			? {}
+			: { requested_resume_after_ms: requestedResumeAfterMs }),
 		...(resumeAfterMs === undefined ? {} : { resume_after_ms: resumeAfterMs }),
 		...(resumeAt === undefined ? {} : { resume_at: resumeAt }),
 	};

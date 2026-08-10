@@ -4,17 +4,30 @@ export interface GoalWait {
 }
 
 export const MAX_GOAL_WAIT_REASON_LENGTH = 1_000;
+export const MIN_GOAL_WAIT_DELAY_MS = 10_000;
 export const MAX_GOAL_WAIT_DELAY_MS = 2_147_483_647;
 const MAX_DATE_TIMESTAMP_MS = 8_640_000_000_000_000;
+
+export function resolveGoalWaitDelay(resumeAfterMs: number | undefined): {
+	requestedMs?: number;
+	effectiveMs?: number;
+} {
+	if (resumeAfterMs === undefined) return {};
+	return {
+		requestedMs: resumeAfterMs,
+		effectiveMs: Math.max(MIN_GOAL_WAIT_DELAY_MS, resumeAfterMs),
+	};
+}
 
 export function createGoalWait(
 	reason: string,
 	resumeAfterMs: number | undefined,
 	now = Date.now(),
 ): GoalWait {
+	const { effectiveMs } = resolveGoalWaitDelay(resumeAfterMs);
 	return {
 		reason,
-		...(resumeAfterMs === undefined ? {} : { resumeAt: now + resumeAfterMs }),
+		...(effectiveMs === undefined ? {} : { resumeAt: now + effectiveMs }),
 	};
 }
 
