@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.51.0
+
+### Minor Changes
+
+- ef4680b: Start `goal_complete`, `goal_blocked`, and `goal_wait` inactive by default until the first Goal activation or unfinished-goal restore.
+
 ## 0.50.0
 
 ### Minor Changes
