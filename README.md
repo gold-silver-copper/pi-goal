@@ -23,7 +23,7 @@ Goal mode uses Codex-like persistence instructions and sends guarded continuatio
 - Registers a `goal_complete({ goal_id, summary })` tool for explicit completion, requiring the current goal id and rejecting missing/stale ids plus plainly contradictory summaries such as “not complete” or “tests still fail”.
 - Registers `goal_blocked({ goal_id, reason, evidence, repeated_turns })` for true impasses only; it requires the current goal id, concrete evidence, and the same blocker recurring for at least three consecutive goal turns.
 - Registers `goal_wait({ goal_id, reason, resume_after_ms? })` for an active Goal that has arranged an external wake message; waiting suppresses automatic continuation while preserving the objective, accounting, queue, and managed-run ownership.
-- Keeps all three Goal tools active by default for a stable tool schema; optional `"after-first-goal"` visibility hides them until the first accepted `/goal` activation or an unfinished goal is restored, then keeps them desired for the rest of that extension runtime without overriding a restrictive restore policy.
+- Starts all three Goal tools inactive by default, reveals them for the first accepted `/goal` activation or an unfinished-goal restore, and keeps them desired for the rest of that extension runtime without overriding a restrictive restore policy. Optional `"always"` visibility keeps them active from session startup.
 - Records continuation and queue-transition intent, then triggers exactly one next turn only after Pi reports the agent fully settled, idle, and free of pending messages; an explicit wait remains quiet until non-Goal work or its optional deadline wakes it, and missing terminal tools still pause before another model turn.
 - Lets retry, compaction, steering, follow-up, and other queued work settle before automatic goal continuation.
 - Separates user interruption (`paused`), true impasse or terminal non-usage error (`blocked`), provider/account quota exhaustion (`usage_limited`), and user token budget exhaustion (`budget_limited`).
@@ -63,7 +63,7 @@ built-in defaults without creating the file:
 
 ```json
 {
-  "toolVisibility": "always",
+  "toolVisibility": "after-first-goal",
   "experimental": {
     "goals": false
   },
@@ -91,8 +91,8 @@ Custom number inputs reject zero, negative numbers, decimals, text, and unsafe i
 
 `toolVisibility` accepts:
 
-- `"always"` (default) — pi-goal does not proactively hide `goal_complete`, `goal_blocked`, or `goal_wait`, keeping the Goal tool schema stable from session startup.
-- `"after-first-goal"` — hides all three Goal tools at fresh runtime startup, reveals them for the first accepted Goal activation, and treats an unfinished-goal restore as unlocked for the remainder of that extension runtime. On restore, pi-goal uses the active tools already established by earlier lifecycle handlers; it does not re-add missing terminal tools over a restrictive policy. Failed kickoff, replacement, resume, or reactivating-edit delivery restores the exact pre-activation tool set, including Goal tools exposed by another extension. If revealing the tools would widen an already-running turn, wait for Pi to become idle and retry `/goal`.
+- `"always"` — pi-goal does not proactively hide `goal_complete`, `goal_blocked`, or `goal_wait`, keeping the Goal tool schema stable from session startup.
+- `"after-first-goal"` (default) — hides all three Goal tools at fresh runtime startup, reveals them for the first accepted Goal activation, and treats an unfinished-goal restore as unlocked for the remainder of that extension runtime. On restore, pi-goal uses the active tools already established by earlier lifecycle handlers; it does not re-add missing terminal tools over a restrictive policy. Failed kickoff, replacement, resume, or reactivating-edit delivery restores the exact pre-activation tool set, including Goal tools exposed by another extension. If revealing the tools would widen an already-running turn, wait for Pi to become idle and retry `/goal`.
 
 `experimental.goals` accepts a boolean and defaults to `false`. Set it to `true` to enable the ordered-goal subcommands and automatic queue advancement described below. Enabled sessions show one warning because command behavior and persisted queue state remain experimental.
 

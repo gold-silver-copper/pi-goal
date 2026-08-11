@@ -24,7 +24,7 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
 	const mock = createMockPi({
 		activeTools: ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"],
 	});
-	registerGoal(mock.pi);
+	registerGoalWithSettingsPath(mock.pi, MISSING_SETTINGS_PATH);
 
 	assert.ok(mock.commands.has("goal"));
 	assert.equal(typeof mock.commands.get("goal")?.getArgumentCompletions, "function");
@@ -41,14 +41,8 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
 	]);
 	const context = createMockContext();
 	mock.events.get("session_start")?.[0]?.({}, context.ctx);
-	// Default settings keep goal tools active for a stable schema.
-	assert.deepEqual(mock.rawPi.getActiveTools(), [
-		"read",
-		"bash",
-		"goal_complete",
-		"goal_blocked",
-		"goal_wait",
-	]);
+	// Default settings hide Goal tools until the first accepted Goal activation.
+	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash"]);
 	const completionParameters = mock.tools.find((tool) => tool.name === "goal_complete")
 		?.parameters as
 		| {
@@ -213,17 +207,11 @@ test("session start uses defaults without materializing missing settings", () =>
 	mock.events.get("session_start")?.[0]?.({}, context.ctx);
 
 	assert.equal(existsSync(parent), false);
-	assert.deepEqual(mock.rawPi.getActiveTools(), [
-		"read",
-		"bash",
-		"goal_complete",
-		"goal_blocked",
-		"goal_wait",
-	]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash"]);
 	assert.equal(context.notifications.length, 0);
 });
 
-test("missing and invalid settings fall back to always-visible tools", () => {
+test("missing and invalid settings fall back to inactive Goal tools", () => {
 	for (const [settingsPath, expectsWarning] of [
 		[MISSING_SETTINGS_PATH, false],
 		[INVALID_SETTINGS_PATH, true],
@@ -235,13 +223,7 @@ test("missing and invalid settings fall back to always-visible tools", () => {
 		const context = createMockContext();
 		mock.events.get("session_start")?.[0]?.({}, context.ctx);
 
-		assert.deepEqual(mock.rawPi.getActiveTools(), [
-			"read",
-			"bash",
-			"goal_complete",
-			"goal_blocked",
-			"goal_wait",
-		]);
+		assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash"]);
 		assert.equal(
 			context.notifications.some((notice) => /settings ignored/.test(notice.message)),
 			expectsWarning,

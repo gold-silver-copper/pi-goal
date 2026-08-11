@@ -12,8 +12,8 @@ import type { ActiveGoal, GoalStateEntryData } from "../src/persistence.js";
 const settingsDirectory = mkdtempSync(join(tmpdir(), "pi-goal-queue-settings-"));
 const enabledSettingsPath = join(settingsDirectory, "enabled.json");
 const disabledSettingsPath = join(settingsDirectory, "disabled.json");
-writeFileSync(enabledSettingsPath, '{"experimental":{"goals":true}}\n');
-writeFileSync(disabledSettingsPath, "{}\n");
+writeFileSync(enabledSettingsPath, '{"toolVisibility":"always","experimental":{"goals":true}}\n');
+writeFileSync(disabledSettingsPath, '{"toolVisibility":"always"}\n');
 
 type GoalTool = {
 	execute: (...args: unknown[]) => Promise<{

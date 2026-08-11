@@ -24,7 +24,7 @@ export interface GoalSettings {
 }
 
 export const DEFAULT_GOAL_SETTINGS: GoalSettings = {
-	toolVisibility: "always",
+	toolVisibility: "after-first-goal",
 	experimental: { goals: false },
 	rpc: { enabled: false },
 	continuationLimits: { automaticTurns: 25, noProgressTurns: 3 },

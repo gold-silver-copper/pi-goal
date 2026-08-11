@@ -221,7 +221,10 @@ test("hiding always-visible Goal tools rejects a busy unrelated run", () => {
 		activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
 	});
 	const state = new GoalRuntime(mock.pi);
-	state.settings = structuredClone(DEFAULT_GOAL_SETTINGS);
+	state.settings = {
+		...structuredClone(DEFAULT_GOAL_SETTINGS),
+		toolVisibility: "always",
+	};
 	const before = state.toolPolicy.snapshot();
 	const next = {
 		...structuredClone(state.settings),
@@ -801,8 +804,8 @@ test("standard Goal tools setting saves and applies immediately", async () => {
 			saved = structuredClone(settings);
 		},
 	});
-	assert.equal(saved?.toolVisibility, "after-first-goal");
-	assert.equal(state.settings.toolVisibility, "after-first-goal");
+	assert.equal(saved?.toolVisibility, "always");
+	assert.equal(state.settings.toolVisibility, "always");
 });
 
 test("invalid settings use a standard read-only detail screen", async () => {

@@ -14,6 +14,7 @@ import {
 const DEFAULT_GOAL_SETTINGS_DOCUMENT = `${JSON.stringify(DEFAULT_GOAL_SETTINGS, null, 2)}\n`;
 
 test("normalizeGoalSettings applies defaults and accepts bounded continuation limits", () => {
+	assert.equal(DEFAULT_GOAL_SETTINGS.toolVisibility, "after-first-goal");
 	assert.equal(DEFAULT_GOAL_SETTINGS.continuationLimits.automaticTurns, 25);
 	assert.deepEqual(DEFAULT_GOAL_SETTINGS.rpc, { enabled: false });
 	assert.deepEqual(normalizeGoalSettings({}), DEFAULT_GOAL_SETTINGS);
