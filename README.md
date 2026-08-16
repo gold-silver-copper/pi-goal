@@ -89,7 +89,7 @@ Custom number inputs reject zero, negative numbers, decimals, text, and unsafe i
 - `"always"` — pi-goal does not proactively hide `goal_complete`, `goal_blocked`, or `goal_wait`, keeping the Goal tool schema stable from session startup.
 - `"after-first-goal"` (default) — hides all three Goal tools at fresh runtime startup, reveals them for the first accepted Goal activation, and treats an unfinished-goal restore as unlocked for the remainder of that extension runtime. On restore, pi-goal uses the active tools already established by earlier lifecycle handlers; it does not re-add missing terminal tools over a restrictive policy. Failed kickoff, replacement, resume, or reactivating-edit delivery restores the exact pre-activation tool set, including Goal tools exposed by another extension. If revealing the tools would widen an already-running turn, wait for Pi to become idle and retry `/goal`.
 
-`experimental.goals` is a removed legacy setting. If it remains `true`, pi-goal accepts the settings file, ignores the old queue feature, and shows an affected-user warning that recommends `/goal edit` when an active objective exists or `/goal <merged objective>` when no active goal exists. Later settings saves preserve unknown legacy fields instead of deleting them.
+`experimental.goals` is a removed legacy setting. If it remains `true`, pi-goal accepts the settings file, ignores the old queue feature, and shows an affected-user warning that recommends `/goal edit` when an active objective exists or `/goal <objectives>` when no active goal exists. Later settings saves preserve unknown legacy fields instead of deleting them.
 
 `rpc.enabled` accepts a boolean and defaults to `false`. When disabled, a valid managed-run start receives `RPC_DISABLED`; manual and restored Goals remain unchanged. A Settings-menu change applies immediately after its atomic save. Disabling rejects new starts but lets an already accepted run continue publishing its exact state and accept its exact cancellation until terminal, avoiding stranded work. Reload, replacement, and shutdown clear that in-memory ownership.
 
@@ -156,7 +156,7 @@ Goal state is stored as Pi session state, similar to Codex's thread-owned goals.
 
 The legacy `{ goal }` shape remains valid, and missing safety fields normalize to zero/defaults. Sessions created by the former standalone `pi-goals` experiment can still restore exactly one ordinary unfinished goal when no canonical `goal-state` entry exists.
 
-If a session still contains old queue metadata, multiple legacy goals, a queued head, or a pending queue transition, pi-goal treats that state as inert legacy data. It does not inject Goal prompts, advance the queue, or run any retained item automatically. Affected users receive a warning that recommends starting one merged objective with `/goal <merged objective>`, or using `/goal clear` to discard the old queue state.
+If a session still contains old queue metadata, multiple legacy goals, a queued head, or a pending queue transition, pi-goal treats that state as inert legacy data. It does not inject Goal prompts, advance the queue, or run any retained item automatically. Affected users receive a warning that recommends starting one merged objective with `/goal <objectives>`, or using `/goal clear` to discard the old queue state.
 
 Older versions wrote unfinished goals to `~/.pi/agent/pi-goal-state.json` keyed by working directory. This version no longer reads that global file, and `/goal clear` removes any legacy entry for the current working directory.
 

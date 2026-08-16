@@ -101,7 +101,7 @@ function reportCommandError(message: string, ctx: ExtensionCommandContext) {
 function reportRemovedQueueCommand(ctx: ExtensionCommandContext, runtime: GoalRuntime) {
 	const message = runtime.activeGoal
 		? "Ordered goal queue has been removed. Use /goal edit to reprioritize the active objective instead."
-		: "Ordered goal queue has been removed. Start /goal <merged objective> to continue with one merged objective, or use /goal clear to discard the old queue state.";
+		: "Ordered goal queue has been removed. Start /goal <objectives> to continue with one merged objective, or use /goal clear to discard the old queue state.";
 	if (ctx.mode === "print" || ctx.mode === "json") throw new Error(message);
 	notifyTerminal(ctx.ui, message, "warning");
 }

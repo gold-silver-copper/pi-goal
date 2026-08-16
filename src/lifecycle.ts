@@ -24,9 +24,9 @@ import { hasAssistantToolCall } from "./safety.js";
 import { DEFAULT_GOAL_SETTINGS, readGoalSettings } from "./settings.js";
 
 const REMOVED_QUEUE_SETTING_WARNING =
-	"Ordered goal queue has been removed. Use /goal edit to reprioritize an active objective, or start /goal <merged objective> if no active goal exists.";
+	"Ordered goal queue has been removed. Use /goal edit to reprioritize an active objective, or start /goal <objectives> if no active goal exists.";
 const REMOVED_PERSISTED_QUEUE_WARNING =
-	"Ordered goal queue has been removed. Start /goal <merged objective> to continue with one merged objective, or use /goal clear to discard the old queue state.";
+	"Ordered goal queue has been removed. Start /goal <objectives> to continue with one merged objective, or use /goal clear to discard the old queue state.";
 
 interface GoalLifecycleOptions {
 	settingsPath?: string;

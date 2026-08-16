@@ -66,7 +66,7 @@ test("legacy persisted queue state is inert and shows migration guidance", () =>
 	assert.equal(mock.sentUserMessages.length, 0);
 	assert.equal(context.statuses.get("goal"), undefined);
 	assert.match(context.notifications.at(-1)?.message ?? "", /ordered goal queue has been removed/i);
-	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <merged objective>/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <objectives>/i);
 	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal clear/i);
 
 	mock.commands.get("goal")?.handler("clear", context.ctx);
@@ -113,7 +113,7 @@ test("legacy setting plus persisted queue state emits one usable warning", () =>
 		/ordered goal queue has been removed/i.test(notification.message),
 	);
 	assert.equal(queueWarnings.length, 1);
-	assert.match(queueWarnings[0]?.message ?? "", /\/goal <merged objective>/i);
+	assert.match(queueWarnings[0]?.message ?? "", /\/goal <objectives>/i);
 	assert.doesNotMatch(queueWarnings[0]?.message ?? "", /\/goal edit/i);
 });
 
@@ -162,7 +162,7 @@ test("failed start from inert legacy queue state preserves the old queue", async
 		context.notifications.at(-1)?.message ?? "",
 		/Legacy queue state with 2 retained goals/i,
 	);
-	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <merged objective>/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <objectives>/i);
 });
 
 test("session persistence restores stopped states with resumable command hints", async () => {

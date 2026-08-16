@@ -466,7 +466,7 @@ export class GoalCommandController {
 		return [
 			"Ordered goal queue has been removed.",
 			`Legacy queue state with ${legacy.retainedGoals} retained ${legacy.retainedGoals === 1 ? "goal" : "goals"} will not run automatically.`,
-			"Use /goal edit to reprioritize an active objective, start /goal <merged objective>, or use /goal clear to discard the old queue state.",
+			"Use /goal edit to reprioritize an active objective, start /goal <objectives>, or use /goal clear to discard the old queue state.",
 			'Example objective: "task b is complete; do task a next, then task c and task d."',
 		].join("\n");
 	}
