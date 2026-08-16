@@ -31,7 +31,7 @@ export function registerGoalCommand(
 		getArgumentCompletions: (prefix) => completeGoalArguments(prefix),
 		handler: async (args, ctx) => {
 			if (runtime.hasLegacyQueueInterface() && isRemovedQueueCommand(args)) {
-				reportRemovedQueueCommand(ctx);
+				reportRemovedQueueCommand(ctx, runtime);
 				return;
 			}
 			const result = parseCommand(args);
@@ -98,9 +98,10 @@ function reportCommandError(message: string, ctx: ExtensionCommandContext) {
 	notifyTerminal(ctx.ui, safeMessage, "warning");
 }
 
-function reportRemovedQueueCommand(ctx: ExtensionCommandContext) {
-	const message =
-		"Ordered goal queue has been removed. Use /goal edit to reprioritize the active objective instead. Example: task b is complete; do task a next, then task c and task d.";
+function reportRemovedQueueCommand(ctx: ExtensionCommandContext, runtime: GoalRuntime) {
+	const message = runtime.activeGoal
+		? "Ordered goal queue has been removed. Use /goal edit to reprioritize the active objective instead."
+		: "Ordered goal queue has been removed. Start /goal <merged objective> to continue with one merged objective, or use /goal clear to discard the old queue state.";
 	if (ctx.mode === "print" || ctx.mode === "json") throw new Error(message);
 	notifyTerminal(ctx.ui, message, "warning");
 }

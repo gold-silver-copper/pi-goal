@@ -51,6 +51,11 @@ export class GoalCommandController {
 
 		const existingGoal =
 			this.runtime.activeGoal?.status !== "complete" ? this.runtime.activeGoal : undefined;
+		const legacyQueueBeforeActivation = existingGoal
+			? undefined
+			: this.runtime.legacyQueueState
+				? structuredClone(this.runtime.legacyQueueState)
+				: undefined;
 		if (existingGoal) {
 			const shouldReplace = await ctx.ui.confirm(
 				"Replace goal?",
@@ -88,11 +93,11 @@ export class GoalCommandController {
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
 		this.runtime.clearStaleGoalToolCallBlock();
-		this.runtime.legacyQueueState = undefined;
+		if (!legacyQueueBeforeActivation) this.runtime.legacyQueueState = undefined;
 		this.runtime.activeGoal = createGoal(objective, tokenBudget, currentTokenTotal(ctx));
 		const startedGoal = this.runtime.activeGoal;
 		onActivated?.(startedGoal);
-		this.runtime.persistGoal(startedGoal);
+		if (!legacyQueueBeforeActivation) this.runtime.persistGoal(startedGoal);
 		if (
 			this.runtime.activeGoal?.id !== startedGoal.id ||
 			this.runtime.activeGoal.status !== "active"
@@ -107,6 +112,15 @@ export class GoalCommandController {
 			true,
 			() => (isRequestCurrent?.() ?? true) && (isActivationCurrent?.(startedGoal) ?? true),
 		);
+		if (
+			sent &&
+			legacyQueueBeforeActivation &&
+			this.runtime.activeGoal?.id === startedGoal.id &&
+			this.runtime.activeGoal.status === "active"
+		) {
+			this.runtime.legacyQueueState = undefined;
+			this.runtime.persistGoal(startedGoal);
+		}
 		if (isActivationCurrent && !isActivationCurrent(startedGoal)) return;
 		if (!sent) {
 			let rolledBackStartedGoal = false;
@@ -137,6 +151,14 @@ export class GoalCommandController {
 						this.runtime.persistGoal(this.runtime.activeGoal);
 						this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 					}
+				} else if (legacyQueueBeforeActivation) {
+					this.runtime.activeGoal = undefined;
+					this.runtime.legacyQueueState = legacyQueueBeforeActivation;
+					this.runtime.cancelContinuationWork();
+					this.runtime.clearGoalRecovery();
+					this.runtime.clearBudgetWrapUp();
+					this.runtime.clearStaleGoalToolCallBlock();
+					ctx.ui.setStatus(STATUS_KEY, undefined);
 				} else {
 					this.runtime.clearActiveGoal(ctx);
 				}
@@ -444,7 +466,7 @@ export class GoalCommandController {
 		return [
 			"Ordered goal queue has been removed.",
 			`Legacy queue state with ${legacy.retainedGoals} retained ${legacy.retainedGoals === 1 ? "goal" : "goals"} will not run automatically.`,
-			"Use /goal edit to reprioritize an active objective, start a new /goal with the merged objective, or use /goal clear to discard the old queue state.",
+			"Use /goal edit to reprioritize an active objective, start /goal <merged objective>, or use /goal clear to discard the old queue state.",
 			'Example objective: "task b is complete; do task a next, then task c and task d."',
 		].join("\n");
 	}

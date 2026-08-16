@@ -65,7 +65,8 @@ test("legacy persisted queue state is inert and shows migration guidance", () =>
 	assert.equal(mock.sentUserMessages.length, 0);
 	assert.equal(context.statuses.get("goal"), undefined);
 	assert.match(context.notifications.at(-1)?.message ?? "", /ordered goal queue has been removed/i);
-	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal edit/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <merged objective>/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal clear/i);
 
 	mock.commands.get("goal")?.handler("clear", context.ctx);
 
@@ -73,6 +74,54 @@ test("legacy persisted queue state is inert and shows migration guidance", () =>
 	assert.equal(mock.entries.at(-1)?.customType, "goal-state");
 	assert.deepEqual(mock.entries.at(-1)?.data, { goal: null });
 	assert.match(context.notifications.at(-1)?.message ?? "", /legacy ordered goal queue state/i);
+});
+
+test("failed start from inert legacy queue state preserves the old queue", async () => {
+	const mock = createMockPi();
+	registerGoal(mock.pi);
+	const legacyGoal = {
+		id: "legacy-head",
+		text: "legacy head",
+		status: "active",
+		startedAt: 1,
+		updatedAt: 1,
+		iteration: 0,
+		tokensUsed: 0,
+		timeUsedSeconds: 0,
+		baselineTokens: 0,
+		automaticModelTurns: 0,
+		toolFreeRepeatCount: 0,
+	};
+	const context = createMockContext({
+		sessionManager: {
+			getBranch: () => [
+				{
+					type: "custom",
+					customType: "goal-state",
+					data: { goal: legacyGoal, queue: [{ ...legacyGoal, id: "legacy-tail" }] },
+				},
+			],
+		},
+	});
+
+	mock.events.get("session_start")?.[0]?.({}, context.ctx);
+	mock.rawPi.sendUserMessage = () => {
+		throw new Error("runtime became busy");
+	};
+
+	await mock.commands.get("goal")?.handler("merged objective", context.ctx);
+
+	assert.equal(mock.entries.length, 0);
+	assert.equal(mock.sentUserMessages.length, 0);
+	assert.equal(context.statuses.get("goal"), undefined);
+
+	await mock.commands.get("goal")?.handler("", context.ctx);
+
+	assert.match(
+		context.notifications.at(-1)?.message ?? "",
+		/Legacy queue state with 2 retained goals/i,
+	);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal <merged objective>/i);
 });
 
 test("session persistence restores stopped states with resumable command hints", async () => {

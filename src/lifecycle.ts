@@ -23,8 +23,10 @@ import {
 import { hasAssistantToolCall } from "./safety.js";
 import { DEFAULT_GOAL_SETTINGS, readGoalSettings } from "./settings.js";
 
-const REMOVED_QUEUE_WARNING =
-	"Ordered goal queue has been removed. Use /goal edit to reprioritize one active objective instead. Example: task b is complete; do task a next, then task c and task d.";
+const REMOVED_QUEUE_SETTING_WARNING =
+	"Ordered goal queue has been removed. Use /goal edit to reprioritize an active objective, or start /goal <merged objective> if no active goal exists.";
+const REMOVED_PERSISTED_QUEUE_WARNING =
+	"Ordered goal queue has been removed. Start /goal <merged objective> to continue with one merged objective, or use /goal clear to discard the old queue state.";
 
 interface GoalLifecycleOptions {
 	settingsPath?: string;
@@ -65,7 +67,7 @@ export function registerGoalLifecycle(
 		runtime.legacyExperimentalGoalsSetting =
 			settingsResult.kind !== "invalid" && settingsResult.legacyExperimentalGoals;
 		if (runtime.legacyExperimentalGoalsSetting) {
-			notifyTerminal(ctx.ui, REMOVED_QUEUE_WARNING, "warning");
+			notifyTerminal(ctx.ui, REMOVED_QUEUE_SETTING_WARNING, "warning");
 		}
 		try {
 			runtime.toolPolicy.prepareSessionStart(
@@ -87,7 +89,7 @@ export function registerGoalLifecycle(
 		if (runtime.legacyQueueState) {
 			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, false);
 			ctx.ui.setStatus(STATUS_KEY, undefined);
-			notifyTerminal(ctx.ui, REMOVED_QUEUE_WARNING, "warning");
+			notifyTerminal(ctx.ui, REMOVED_PERSISTED_QUEUE_WARNING, "warning");
 			return;
 		}
 
