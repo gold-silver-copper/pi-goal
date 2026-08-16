@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import {
@@ -12,8 +13,67 @@ import {
 	restoreStoredGoalForTest,
 	STALE_GOAL_TOOL_REASON,
 	type StoredGoal,
+	settingsPath,
 	startGoalForTest,
 } from "./support/goal-fixture.js";
+
+test("legacy queue commands warn affected users without replacing the goal", async () => {
+	const legacySettingsPath = settingsPath("legacy-experimental-goals.json");
+	writeFileSync(legacySettingsPath, '{"experimental":{"goals":true}}\n');
+	const active = await startGoalForTest({}, "current objective", legacySettingsPath);
+	const before = requireLastGoal(active.mock);
+
+	await active.mock.commands.get("goal")?.handler("prioritize urgent objective", active.ctx);
+
+	assert.equal(requireLastGoal(active.mock).id, before.id);
+	assert.equal(requireLastGoal(active.mock).text, "current objective");
+	assert.equal(active.mock.sentUserMessages.length, 1);
+	assert.match(active.notifications.at(-1)?.message ?? "", /ordered goal queue has been removed/i);
+	assert.match(active.notifications.at(-1)?.message ?? "", /\/goal edit/i);
+});
+
+test("legacy persisted queue state is inert and shows migration guidance", () => {
+	const mock = createMockPi();
+	registerGoal(mock.pi);
+	const legacyGoal = {
+		id: "legacy-head",
+		text: "legacy head",
+		status: "active",
+		startedAt: 1,
+		updatedAt: 1,
+		iteration: 0,
+		tokensUsed: 0,
+		timeUsedSeconds: 0,
+		baselineTokens: 0,
+		automaticModelTurns: 0,
+		toolFreeRepeatCount: 0,
+	};
+	const context = createMockContext({
+		sessionManager: {
+			getBranch: () => [
+				{
+					type: "custom",
+					customType: "goal-state",
+					data: { goal: legacyGoal, queue: [{ ...legacyGoal, id: "legacy-tail" }] },
+				},
+			],
+		},
+	});
+
+	mock.events.get("session_start")?.[0]?.({}, context.ctx);
+
+	assert.equal(mock.sentUserMessages.length, 0);
+	assert.equal(context.statuses.get("goal"), undefined);
+	assert.match(context.notifications.at(-1)?.message ?? "", /ordered goal queue has been removed/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /\/goal edit/i);
+
+	mock.commands.get("goal")?.handler("clear", context.ctx);
+
+	assert.equal(context.statuses.get("goal"), undefined);
+	assert.equal(mock.entries.at(-1)?.customType, "goal-state");
+	assert.deepEqual(mock.entries.at(-1)?.data, { goal: null });
+	assert.match(context.notifications.at(-1)?.message ?? "", /legacy ordered goal queue state/i);
+});
 
 test("session persistence restores stopped states with resumable command hints", async () => {
 	for (const [status, statusline] of [

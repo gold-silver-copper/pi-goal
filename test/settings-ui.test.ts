@@ -99,98 +99,6 @@ test("applyGoalSettings restores effective tool policy when persistence fails", 
 	assert.deepEqual(state.visibility, before);
 });
 
-test("applyGoalSettings rolls back file and effective state after runtime application fails", () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: true },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued objective", undefined, 0)];
-	const previous = structuredClone(state.settings);
-	const next = { ...structuredClone(previous), experimental: { goals: false } };
-	const saved: GoalSettings[] = [];
-	let persistCalls = 0;
-	state.persistGoal = () => {
-		persistCalls++;
-		if (persistCalls === 1) throw new Error("stale context");
-	};
-	const context = createMockContext({ mode: "tui", hasUI: true });
-
-	assert.throws(
-		() =>
-			applyGoalSettings(state, next, context.ctx, {
-				save(settings) {
-					saved.push(structuredClone(settings));
-				},
-			}),
-		/stale context/,
-	);
-	assert.deepEqual(saved, [next, previous]);
-	assert.deepEqual(state.settings, previous);
-	assert.equal(state.queueFrozen, false);
-	assert.equal(state.activeGoal?.status, "active");
-});
-
-test("disabling a retained queue pauses and aborts in-flight Goal work", () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: true },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued objective", undefined, 0)];
-	state.requestContinuation(state.activeGoal);
-	state.beginAgentRun(state.activeGoal.id, "automatic");
-	let aborts = 0;
-	const context = createMockContext({
-		mode: "tui",
-		hasUI: true,
-		abort: () => aborts++,
-	});
-	const next = { ...structuredClone(state.settings), experimental: { goals: false } };
-
-	applyGoalSettings(state, next, context.ctx, { save() {} });
-
-	assert.equal(aborts, 1);
-	assert.equal(state.queueFrozen, true);
-	assert.equal(state.activeGoal?.status, "active");
-	assert.equal(state.activeGoal?.activeStartedAt, undefined);
-	assert.equal(state.continuationIntent, undefined);
-	assert.equal(state.staleGoalToolCallsBlocked, true);
-});
-
-test("freezing a queue preserves an unrelated in-flight run", () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: true },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued objective", undefined, 0)];
-	state.beginAgentRun(null, undefined);
-	let aborts = 0;
-	const context = createMockContext({
-		mode: "tui",
-		hasUI: true,
-		abort: () => aborts++,
-	});
-	const next = { ...structuredClone(state.settings), experimental: { goals: false } };
-
-	applyGoalSettings(state, next, context.ctx, { save() {} });
-
-	assert.equal(aborts, 0);
-	assert.equal(state.queueFrozen, true);
-	assert.equal(state.agentRunGoalId, null);
-	assert.equal(state.activeGoal?.activeStartedAt, undefined);
-	assert.equal(state.guardAbortGoalId, undefined);
-	assert.equal(state.queueFreezeAwaitingSettle, false);
-	assert.equal(state.staleGoalToolCallsBlocked, false);
-});
-
 test("revealing lazy Goal tools rejects a busy unrelated run", () => {
 	const state = runtime();
 	state.settings = {
@@ -323,14 +231,13 @@ test("replacement confirmation does not replace a goal that changed while open",
 
 	assert.equal(state.activeGoal?.id, replacement.id);
 	assert.equal(mock.sentUserMessages.length, 0);
-	assert.match(context.notifications.at(-1)?.message ?? "", /goal queue changed.*try again/i);
+	assert.match(context.notifications.at(-1)?.message ?? "", /active goal changed.*try again/i);
 });
 
 test("replacement confirmation sanitizes terminal controls without changing goal data", async () => {
 	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
 	const state = new GoalRuntime(mock.pi);
 	state.activeGoal = createGoal("current\u001b]8;;bad\u0007 objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued\u001b objective", undefined, 0)];
 	let preview = "";
 	const context = createMockContext({
 		mode: "tui",
@@ -349,84 +256,8 @@ test("replacement confirmation sanitizes terminal controls without changing goal
 	}
 	assert.match(preview, /Current goal: current objective/);
 	assert.doesNotMatch(preview, /]8;;bad/);
-	assert.match(preview, /Queued goals also removed:\n1\. queued objective/);
 	assert.match(preview, /New goal: new 31m objective/);
 	assert.equal(state.activeGoal?.text, "current\u001b]8;;bad\u0007 objective");
-});
-
-test("unfreezing waits for an aborted frozen run to settle before dispatching", async () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: false },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued objective", undefined, 0)];
-	state.beginAgentRun(state.activeGoal.id, "manual");
-	state.queueFrozen = true;
-	state.guardAbortGoalId = state.activeGoal.id;
-	state.queueFreezeAwaitingSettle = true;
-	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => true });
-	const enabled = { ...structuredClone(state.settings), experimental: { goals: true } };
-	const controller = new GoalCommandController(state);
-
-	applyGoalSettings(state, enabled, context.ctx, { save() {} });
-	const dispatchedEarly = await controller.resumeQueueAfterUnfreeze(context.ctx);
-
-	assert.equal(dispatchedEarly, false);
-	assert.equal(state.queueFrozen, true);
-	assert.equal(state.guardAbortGoalId, state.activeGoal.id);
-	assert.equal(mock.sentUserMessages.length, 0);
-
-	state.clearSettledSafetyTracking();
-	state.queueFreezeAwaitingSettle = false;
-	const dispatchedAfterSettle = await controller.resumeQueueAfterUnfreeze(context.ctx);
-
-	assert.equal(dispatchedAfterSettle, true);
-	assert.equal(state.queueFrozen, false);
-	assert.equal(typeof state.activeGoal?.activeStartedAt, "number");
-	assert.equal(mock.sentUserMessages.length, 1);
-});
-
-test("unfreezing an active retained queue dispatches Goal work immediately", async () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: true },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.queuedGoals = [createGoal("queued objective", undefined, 0)];
-	state.queueFrozen = false;
-	const controller = new GoalCommandController(state);
-	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => true });
-
-	const dispatched = await controller.resumeQueueAfterUnfreeze(context.ctx);
-
-	assert.equal(dispatched, true);
-	assert.equal(mock.sentUserMessages.length, 1);
-	assert.match(mock.sentUserMessages[0]?.text ?? "", /Continue the active \/goal/i);
-});
-
-test("unfreezing a pending priority dispatches it at the idle boundary", async () => {
-	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		experimental: { goals: true },
-	};
-	state.activeGoal = createGoal("current objective", undefined, 0);
-	state.pendingQueueAction = { kind: "prioritize", objective: "urgent objective" };
-	const controller = new GoalCommandController(state);
-	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => true });
-
-	const dispatched = await controller.resumeQueueAfterUnfreeze(context.ctx);
-
-	assert.equal(dispatched, true);
-	assert.equal(state.pendingQueueAction, undefined);
-	assert.equal(state.activeGoal?.text, "urgent objective");
-	assert.equal(mock.sentUserMessages.length, 1);
 });
 
 test("standard settings keep all five controls on one level", async () => {
@@ -448,7 +279,6 @@ test("standard settings keep all five controls on one level", async () => {
 		"Automatic-work limit",
 		"No-progress guard",
 		"Goal tools",
-		"Ordered goal queue",
 		"Managed run RPC",
 	]);
 });

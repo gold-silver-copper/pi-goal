@@ -108,19 +108,6 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 					details: completionDetails(goal, requestedGoalId, summary),
 				};
 			}
-			if (hasPendingSkipForGoal(runtime, completedGoal.id)) {
-				runtime.recordGoalUsage(completedGoal, ctx);
-				runtime.persistGoal(completedGoal);
-				runtime.updateStatus(ctx, completedGoal);
-				runtime.clearBudgetWrapUp();
-				const rejection = "Goal completion rejected: goal is queued to be skipped.";
-				notifyTerminal(ctx.ui, rejection, "warning");
-				return {
-					content: toolContent(rejection),
-					details: completionDetails(goal, requestedGoalId, summary),
-					terminate: true,
-				};
-			}
 			const staleGoalRejection = goalIdRejectionReason(completedGoal, requestedGoalId);
 			if (staleGoalRejection) {
 				const rejection = `Goal completion rejected: ${staleGoalRejection}.`;
@@ -174,42 +161,6 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			runtime.activeGoal = transitionGoal(completedGoal, "complete");
 			runtime.setCompletionSummary(runtime.activeGoal.id, summary);
 			runtime.recordGoalUsage(runtime.activeGoal, ctx);
-			if (runtime.pendingQueueAction?.kind === "prioritize") {
-				runtime.persistGoal(runtime.activeGoal);
-				ctx.ui.setStatus(STATUS_KEY, "complete");
-				notifyTerminal(
-					ctx.ui,
-					`Goal complete: ${goal}. Priority goal waits for Pi to settle.`,
-					"info",
-				);
-				return {
-					content: toolContent(`Goal complete: ${summary}`),
-					details: completionDetails(goal, requestedGoalId, summary),
-					terminate: true,
-				};
-			}
-			if (runtime.queuedGoals.length > 0) {
-				runtime.pendingQueueAction = {
-					kind: "advance",
-					goalId: runtime.activeGoal.id,
-					reason: "complete",
-					completedText: goal,
-				};
-				runtime.persistGoal(runtime.activeGoal);
-				ctx.ui.setStatus(STATUS_KEY, "complete");
-				notifyTerminal(
-					ctx.ui,
-					`Goal complete: ${goal}. Next goal queued: ${runtime.queuedGoals[0]?.text}`,
-					"info",
-				);
-				return {
-					content: toolContent(
-						`Goal complete: ${summary}\nNext goal queued: ${runtime.queuedGoals[0]?.text}`,
-					),
-					details: completionDetails(goal, requestedGoalId, summary),
-					terminate: true,
-				};
-			}
 			runtime.persistGoal(runtime.activeGoal);
 
 			ctx.ui.setStatus(STATUS_KEY, formatStatus(runtime.activeGoal));
@@ -280,13 +231,6 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			if (!blockedGoal) return reject("no active goal");
 			if (!runtime.canRecordGoalUsage()) {
 				return reject("current run does not own the active goal");
-			}
-			if (hasPendingSkipForGoal(runtime, blockedGoal.id)) {
-				runtime.recordGoalUsage(blockedGoal, ctx);
-				runtime.persistGoal(blockedGoal);
-				runtime.updateStatus(ctx, blockedGoal);
-				runtime.clearBudgetWrapUp();
-				return reject("goal is queued to be skipped", true);
 			}
 			const staleGoalRejection = goalIdRejectionReason(blockedGoal, requestedGoalId);
 			if (staleGoalRejection) return reject(staleGoalRejection);
@@ -368,7 +312,6 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			if (!runtime.canRecordGoalUsage()) {
 				return reject("current run does not own the active goal");
 			}
-			if (runtime.pendingQueueAction) return reject("a goal queue transition is pending");
 			const staleGoalRejection = goalIdRejectionReason(activeGoal, requestedGoalId);
 			if (staleGoalRejection) return reject(staleGoalRejection);
 			if (activeGoal.status !== "active") {
@@ -470,12 +413,4 @@ function waitDetails(
 		...(resumeAfterMs === undefined ? {} : { resume_after_ms: resumeAfterMs }),
 		...(resumeAt === undefined ? {} : { resume_at: resumeAt }),
 	};
-}
-
-function hasPendingSkipForGoal(runtime: GoalRuntime, goalId: string) {
-	return (
-		runtime.pendingQueueAction?.kind === "advance" &&
-		runtime.pendingQueueAction.reason === "skip" &&
-		runtime.pendingQueueAction.goalId === goalId
-	);
 }

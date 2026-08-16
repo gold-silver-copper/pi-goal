@@ -15,7 +15,7 @@ import {
 import {
 	type ActiveGoal,
 	clearLegacyPersistedGoal,
-	type PendingQueueAction,
+	type LegacyQueueState,
 	type SafetyPauseCause,
 	serializeGoalState,
 } from "./persistence.js";
@@ -156,8 +156,8 @@ interface GoalTerminalDetails {
 export interface GoalSettingsRuntimeSnapshot {
 	settings: GoalSettings;
 	activeGoal?: ActiveGoal;
-	queueFrozen: boolean;
-	queueFreezeAwaitingSettle: boolean;
+	legacyQueueState?: LegacyQueueState;
+	legacyExperimentalGoalsSetting: boolean;
 	continuationIntent?: ContinuationTicket;
 	continuationDelivery?: ContinuationTicket;
 	goalRecovery?: GoalRecovery;
@@ -208,10 +208,8 @@ export class GoalRuntime {
 	/** Terminal details captured for the matching persisted-state snapshot. */
 	private terminalDetails?: GoalTerminalDetails;
 	private goalStateSink?: (snapshot: GoalStateSnapshot) => void;
-	queuedGoals: ActiveGoal[] = [];
-	pendingQueueAction?: PendingQueueAction;
-	queueFrozen = false;
-	queueFreezeAwaitingSettle = false;
+	legacyQueueState?: LegacyQueueState;
+	legacyExperimentalGoalsSetting = false;
 	completionStatusTimer?: NodeJS.Timeout;
 	private continuationDispatchTimer?: NodeJS.Timeout;
 	private readonly goalWaitTimer = new GoalWaitTimer();
@@ -248,6 +246,10 @@ export class GoalRuntime {
 		this.toolPolicy = new GoalToolPolicy(pi);
 	}
 
+	hasLegacyQueueInterface() {
+		return this.legacyExperimentalGoalsSetting || this.legacyQueueState !== undefined;
+	}
+
 	setGoalStateSink(sink: ((snapshot: GoalStateSnapshot) => void) | undefined) {
 		this.goalStateSink = sink;
 	}
@@ -274,13 +276,7 @@ export class GoalRuntime {
 	canRecordGoalUsage(goalId?: string) {
 		return (
 			this.agentRunGoalId !== null &&
-			(goalId === undefined ||
-				this.agentRunGoalId === undefined ||
-				this.agentRunGoalId === goalId) &&
-			!(
-				this.pendingQueueAction?.kind === "prioritize" &&
-				this.pendingQueueAction.displacedUsageFinalized === true
-			)
+			(goalId === undefined || this.agentRunGoalId === undefined || this.agentRunGoalId === goalId)
 		);
 	}
 
@@ -439,7 +435,6 @@ export class GoalRuntime {
 
 	restoreGoalWaitTimer(ctx: StatusContext) {
 		this.clearGoalWaitTimer();
-		if (this.queueFrozen || this.pendingQueueAction) return false;
 		const goal = this.activeGoal;
 		const resumeAt = goal?.status === "active" ? goal.waiting?.resumeAt : undefined;
 		if (!goal || resumeAt === undefined) return false;
@@ -448,7 +443,6 @@ export class GoalRuntime {
 	}
 
 	dispatchDueGoalWait(ctx: StatusContext) {
-		if (this.queueFrozen || this.pendingQueueAction) return false;
 		const goal = this.activeGoal;
 		const waiting = goal?.status === "active" ? goal.waiting : undefined;
 		const resumeAt = waiting?.resumeAt;
@@ -1008,12 +1002,7 @@ export class GoalRuntime {
 		if (!marker) return false;
 		const pending = this.pendingGoalPromptMarkers.get(marker);
 		if (!pending || !preservesOwnedPromptAtTerminalBoundary(prompt, pending.prompt)) return false;
-		if (
-			!this.queueFrozen &&
-			!this.pendingQueueAction &&
-			this.activeGoal?.id === pending.goalId &&
-			this.activeGoal.status === "active"
-		) {
+		if (this.activeGoal?.id === pending.goalId && this.activeGoal.status === "active") {
 			return false;
 		}
 		this.pendingGoalPromptMarkers.delete(marker);
@@ -1105,17 +1094,14 @@ export class GoalRuntime {
 		if (!isTerminalGoalStatus(goal.status) || this.terminalDetails?.goalId !== goal.id) {
 			this.clearTerminalDetails();
 		}
-		this.pi.appendEntry(
-			GOAL_STATE_ENTRY_TYPE,
-			serializeGoalState(goal, this.queuedGoals, this.pendingQueueAction),
-		);
+		this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, serializeGoalState(goal));
 		this.publishGoalState(
 			buildGoalStateSnapshot(goal, this.terminalDetails?.summary, this.terminalDetails?.reason),
 		);
 	}
 
 	clearPersistedGoal(cwd: string, clearedGoal?: ActiveGoal, reason = "goal cleared") {
-		this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, serializeGoalState(undefined, [], undefined));
+		this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, serializeGoalState(undefined));
 		if (clearedGoal) {
 			this.publishGoalState({
 				goalId: clearedGoal.id,
@@ -1135,10 +1121,7 @@ export class GoalRuntime {
 		this.clearBudgetWrapUp();
 		this.clearStaleGoalToolCallBlock();
 		this.activeGoal = undefined;
-		this.queuedGoals = [];
-		this.pendingQueueAction = undefined;
-		this.queueFrozen = false;
-		this.queueFreezeAwaitingSettle = false;
+		this.legacyQueueState = undefined;
 		this.clearPersistedGoal(ctx.cwd, clearedGoal, reason);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		// Do not relock toolPolicy: after first activation, keep tools visible for the
@@ -1149,8 +1132,8 @@ export class GoalRuntime {
 		return {
 			settings: structuredClone(this.settings),
 			activeGoal: this.activeGoal ? structuredClone(this.activeGoal) : undefined,
-			queueFrozen: this.queueFrozen,
-			queueFreezeAwaitingSettle: this.queueFreezeAwaitingSettle,
+			legacyQueueState: this.legacyQueueState ? structuredClone(this.legacyQueueState) : undefined,
+			legacyExperimentalGoalsSetting: this.legacyExperimentalGoalsSetting,
 			continuationIntent: this.continuationIntent
 				? structuredClone(this.continuationIntent)
 				: undefined,
@@ -1170,8 +1153,10 @@ export class GoalRuntime {
 	restoreSettingsApplicationState(snapshot: GoalSettingsRuntimeSnapshot) {
 		this.settings = structuredClone(snapshot.settings);
 		this.activeGoal = snapshot.activeGoal ? structuredClone(snapshot.activeGoal) : undefined;
-		this.queueFrozen = snapshot.queueFrozen;
-		this.queueFreezeAwaitingSettle = snapshot.queueFreezeAwaitingSettle;
+		this.legacyQueueState = snapshot.legacyQueueState
+			? structuredClone(snapshot.legacyQueueState)
+			: undefined;
+		this.legacyExperimentalGoalsSetting = snapshot.legacyExperimentalGoalsSetting;
 		this.continuationIntent = snapshot.continuationIntent
 			? structuredClone(snapshot.continuationIntent)
 			: undefined;
@@ -1379,15 +1364,11 @@ export function formatBudget(goal: ActiveGoal) {
 
 export function goalSummary(
 	goal: ActiveGoal,
-	queuedGoals: readonly ActiveGoal[] = [],
-	experimentalGoals = false,
-	queueFrozen = false,
-	pendingAction?: PendingQueueAction,
 	automaticTurnLimit: number | null = DEFAULT_GOAL_SETTINGS.continuationLimits.automaticTurns,
 ) {
 	const summary = [
 		`Goal: ${goal.text}`,
-		`Status: ${queueFrozen ? "queue off" : goal.waiting ? "waiting" : goal.status}`,
+		`Status: ${goal.waiting ? "waiting" : goal.status}`,
 		...(goal.waiting
 			? [
 					`Waiting: ${safeGoalMenuText(goal.waiting.reason, 1_000)}`,
@@ -1410,30 +1391,7 @@ export function goalSummary(
 				: "Safety pause: no progress. Progress is saved; open /goal to review and continue.",
 		);
 	}
-	if (experimentalGoals || queuedGoals.length > 0 || queueFrozen || pendingAction) {
-		const orderedGoals = [
-			`[${goal.status}] ${goal.text}`,
-			...(pendingAction?.kind === "prioritize" ? [`[pending] ${pendingAction.objective}`] : []),
-			...queuedGoals.map((queuedGoal) => `[${queuedGoal.status}] ${queuedGoal.text}`),
-		];
-		summary.push(
-			`Goals (${orderedGoals.length}):`,
-			...orderedGoals.map((queuedGoal, index) => `${index + 1}. ${queuedGoal}`),
-		);
-	}
-	if (pendingAction?.kind === "advance") {
-		summary.push(
-			`Pending queue action: ${pendingAction.reason === "complete" ? "complete" : "skip"} current goal when Pi settles.`,
-		);
-	}
-	if (queueFrozen) {
-		summary.push(
-			"Queue is frozen. Re-enable experimental.goals and run /reload, or use /goal clear.",
-			"Commands: /goal, /goal clear",
-		);
-	} else {
-		summary.push(`Commands: ${goalCommandHint(goal, experimentalGoals)}`);
-	}
+	summary.push(`Commands: ${goalCommandHint(goal)}`);
 	return summary.join("\n");
 }
 

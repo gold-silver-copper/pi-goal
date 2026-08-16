@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
-import { createGoal, GoalRuntime } from "../src/runtime.js";
+import { createGoal } from "../src/runtime.js";
 import { MAX_GOAL_WAIT_DELAY_MS, MIN_GOAL_WAIT_DELAY_MS } from "../src/wait.js";
 import {
 	lastGoal,
@@ -575,31 +574,6 @@ test("a deadline that expires while busy waits for the next settled idle boundar
 	assert.equal(requireLastGoal(waiting.mock).waiting, undefined);
 });
 
-test("frozen queues and pending transitions cannot dispatch a waiting deadline", async () => {
-	for (const state of ["frozen", "pending"] as const) {
-		const mock = createMockPi();
-		const context = createMockContext();
-		const runtime = new GoalRuntime(mock.pi);
-		runtime.activeGoal = createGoal(`goal-${state}`, undefined, 0);
-		runtime.enterGoalWait(context.ctx, runtime.activeGoal.id, {
-			reason: `Waiting while ${state}`,
-			resumeAt: Date.now() + 100,
-		});
-		if (state === "frozen") runtime.queueFrozen = true;
-		else {
-			runtime.pendingQueueAction = {
-				kind: "prioritize",
-				objective: "urgent",
-			};
-		}
-		runtime.restoreGoalWaitTimer(context.ctx);
-		await vi.advanceTimersByTimeAsync(100);
-		assert.equal(mock.sentUserMessages.length, 0);
-		assert.ok(runtime.activeGoal.waiting);
-		assert.equal(runtime.dispatchDueGoalWait(context.ctx), false);
-	}
-});
-
 test("shutdown cancels a waiting deadline without discarding persisted waiting state", async () => {
 	const waiting = await startGoalForTest();
 	const goal = requireLastGoal(waiting.mock);
@@ -733,35 +707,6 @@ test("failed priority delivery restores the waiting head and its deadline", asyn
 	waiting.mock.rawPi.sendUserMessage = sendUserMessage;
 	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
 	assert.equal(waiting.mock.sentUserMessages.length, 2);
-});
-
-test("priority displacement cancels waiting before shelving the old goal", async () => {
-	const queueSettings = settingsPath("wait-queue.json");
-	writeFileSync(queueSettings, '{"experimental":{"goals":true}}\n');
-	const waiting = await startGoalForTest({}, "original goal", queueSettings);
-	const goal = requireLastGoal(waiting.mock);
-	await requireGoalTool(waiting.mock, "goal_wait").execute(
-		"wait-priority",
-		{
-			goal_id: goal.id,
-			reason: "Waiting before priority",
-			resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
-		},
-		new AbortController().signal,
-		() => undefined,
-		waiting.ctx,
-	);
-
-	await waiting.mock.commands.get("goal")?.handler("prioritize urgent goal", waiting.ctx);
-	const state = waiting.mock.entries.filter((entry) => entry.customType === "goal-state").at(-1)
-		?.data as
-		| { goal?: { text?: string; waiting?: unknown }; queue?: Array<{ waiting?: unknown }> }
-		| undefined;
-	assert.equal(state?.goal?.text, "urgent goal");
-	assert.equal(state?.queue?.[0]?.waiting, undefined);
-	const messagesAfterPriority = waiting.mock.sentUserMessages.length;
-	await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
-	assert.equal(waiting.mock.sentUserMessages.length, messagesAfterPriority);
 });
 
 test("session restore keeps a waiting deadline absolute and wakes once", async () => {

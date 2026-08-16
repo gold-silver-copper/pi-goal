@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { type ExtensionCommandContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { checkpointGoalActiveTime } from "./accounting.js";
 import { notifyTerminal, safeTerminalText } from "./errors.js";
-import { abortCurrentTurn, type GoalRuntime, STATUS_KEY } from "./runtime.js";
+import type { GoalRuntime } from "./runtime.js";
 import {
 	DEFAULT_GOAL_SETTINGS,
 	GOAL_SETTINGS_FILE,
@@ -14,7 +13,6 @@ interface GoalSettingsUiOptions {
 	settingsPath?: string;
 	initialScreen?: "settings" | "automatic";
 	save?: (settings: GoalSettings, settingsPath: string) => void;
-	onQueueUnfrozen?: (ctx: ExtensionCommandContext) => Promise<void>;
 }
 
 interface GoalSettingsApplyOptions {
@@ -51,7 +49,6 @@ export async function showGoalSettings(
 		| "choose-automatic"
 		| "choose-no-progress"
 		| "set-visibility"
-		| "set-queue"
 		| "set-rpc";
 	const menu = defineMenu<undefined, Screen, Action, ExtensionCommandContext>({
 		start: invalid ? "invalid" : (options.initialScreen ?? "settings"),
@@ -88,14 +85,6 @@ export async function showGoalSettings(
 						action: "set-visibility",
 					},
 					{
-						id: "experimentalGoals",
-						label: "Ordered goal queue",
-						description: "Enable experimental add, prioritize, skip, and drop-last workflows.",
-						currentValue: runtime.settings.experimental.goals ? "Experimental" : "Off",
-						values: ["Off", "Experimental"],
-						action: "set-queue",
-					},
-					{
 						id: "rpcEnabled",
 						label: "Managed run RPC",
 						description:
@@ -116,7 +105,6 @@ export async function showGoalSettings(
 					`Automatic-work limit: ${formatAutomaticWork(runtime.settings.continuationLimits.automaticTurns)}`,
 					`No-progress guard: ${formatNoProgressProtection(runtime.settings.continuationLimits.noProgressTurns)}`,
 					`Goal tools: ${visibilityLabel(runtime.settings.toolVisibility)}`,
-					`Ordered goal queue: ${runtime.settings.experimental.goals ? "Experimental" : "Off"}`,
 					`Managed run RPC: ${runtime.settings.rpc.enabled ? "On" : "Off"}`,
 				],
 				hint: "back",
@@ -165,38 +153,6 @@ export async function showGoalSettings(
 						save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
 					});
 					notifyTerminal(ctx.ui, `Goal tools: ${value}.`, "info");
-					return { kind: "stay" };
-				} catch (error) {
-					notifySettingsFailure(ctx, settingsPath, error);
-					return { kind: "rejected" };
-				}
-			},
-			"set-queue": async ({ value }) => {
-				const enabled = value === "Experimental";
-				if (enabled === runtime.settings.experimental.goals) return { kind: "stay" };
-				const next = await nextQueueSettings(runtime, ctx, enabled);
-				if (!next) return { kind: "rejected" };
-				const wasFrozen = runtime.queueFrozen;
-				try {
-					applyGoalSettings(runtime, next, ctx, {
-						save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
-					});
-					if (wasFrozen && !runtime.queueFrozen) {
-						try {
-							await options.onQueueUnfrozen?.(ctx);
-						} catch (error) {
-							notifyTerminal(
-								ctx.ui,
-								`Goal queue enabled, but automatic resume failed: ${safeTerminalText(formatError(error))}. Reopen /goal to retry.`,
-								"warning",
-							);
-						}
-					}
-					notifyTerminal(
-						ctx.ui,
-						`Ordered goal queue: ${enabled ? "Experimental" : "Off"}.`,
-						"info",
-					);
 					return { kind: "stay" };
 				} catch (error) {
 					notifySettingsFailure(ctx, settingsPath, error);
@@ -374,12 +330,11 @@ export function applyGoalSettings(
 		applyToolVisibility(runtime, snapshot.settings, next, ctx);
 		options.save?.(next);
 		fileSaved = options.save !== undefined;
-		applyQueueSetting(runtime, ctx);
 		const activeGoalId = runtime.activeGoal?.id;
 		const abortOwnedRun = activeGoalId !== undefined && runtime.agentRunGoalId === activeGoalId;
 		const pausedByAutomaticLimit = runtime.enforceAutomaticTurnLimit(ctx, abortOwnedRun);
 		if (!pausedByAutomaticLimit) runtime.enforceNoProgressLimit(ctx, abortOwnedRun);
-		if (runtime.activeGoal && !runtime.queueFrozen) {
+		if (runtime.activeGoal) {
 			runtime.updateStatus(ctx, runtime.activeGoal);
 		}
 	} catch (error) {
@@ -463,35 +418,6 @@ async function resolveLimitSelection(
 	}
 }
 
-async function nextQueueSettings(
-	runtime: GoalRuntime,
-	ctx: ExtensionCommandContext,
-	enabled: boolean,
-) {
-	if (runtime.settings.experimental.goals === enabled) return undefined;
-	if (enabled && !runtime.settings.experimental.goals) {
-		const confirmed = await ctx.ui.confirm(
-			"Enable experimental goal queue?",
-			"Queue behavior and persisted state may change between releases. Existing single-goal behavior remains available.",
-		);
-		if (!confirmed) return undefined;
-	}
-	if (
-		!enabled &&
-		(runtime.queuedGoals.length > 0 || runtime.pendingQueueAction !== undefined) &&
-		!(await ctx.ui.confirm(
-			"Freeze ordered goal queue?",
-			`Disabling the experiment preserves ${retainedGoalCount(runtime)} goal(s) but freezes automatic work until the setting is re-enabled. No goal data will be deleted.`,
-		))
-	) {
-		return undefined;
-	}
-	return {
-		...structuredClone(runtime.settings),
-		experimental: { goals: enabled },
-	} satisfies GoalSettings;
-}
-
 function applyToolVisibility(
 	runtime: GoalRuntime,
 	previous: GoalSettings,
@@ -506,52 +432,12 @@ function applyToolVisibility(
 	);
 }
 
-function applyQueueSetting(runtime: GoalRuntime, ctx: ExtensionCommandContext) {
-	const hasQueueState = runtime.queuedGoals.length > 0 || runtime.pendingQueueAction !== undefined;
-	const shouldFreeze = !runtime.settings.experimental.goals && hasQueueState;
-	// Keep the freeze guard until the aborted Goal-owned run reaches agent_settled.
-	// Releasing it earlier lets the old agent_end pause newly resumed work.
-	if (runtime.queueFrozen && !shouldFreeze && runtime.queueFreezeAwaitingSettle) return;
-	if (runtime.queueFrozen === shouldFreeze) return;
-	const activeGoal = runtime.activeGoal?.status === "active" ? runtime.activeGoal : undefined;
-	const goalOwnedRun = activeGoal && runtime.agentRunGoalId === activeGoal.id;
-	if (shouldFreeze && activeGoal) {
-		if (goalOwnedRun) runtime.recordGoalUsage(activeGoal, ctx, false);
-		else {
-			const now = Date.now();
-			checkpointGoalActiveTime(activeGoal, now, false);
-			activeGoal.updatedAt = now;
-		}
-	}
-	runtime.queueFrozen = shouldFreeze;
-	if (runtime.activeGoal) runtime.persistGoal(runtime.activeGoal);
-	if (shouldFreeze) ctx.ui.setStatus(STATUS_KEY, "queue off");
-	else if (runtime.activeGoal) runtime.updateStatus(ctx, runtime.activeGoal);
-	else ctx.ui.setStatus(STATUS_KEY, undefined);
-	if (!shouldFreeze) return;
-
-	runtime.clearGoalWaitTimer();
-	runtime.cancelContinuationWork();
-	runtime.clearGoalRecovery();
-	runtime.clearBudgetWrapUp();
-	if (goalOwnedRun) {
-		runtime.blockStaleGoalToolCalls();
-		runtime.guardAbortGoalId = activeGoal.id;
-		runtime.queueFreezeAwaitingSettle = true;
-		runtime.clearAgentRun();
-		abortCurrentTurn(ctx);
-	}
-}
-
 function restorePersistedRuntime(runtime: GoalRuntime, ctx: ExtensionCommandContext) {
 	if (runtime.activeGoal) {
 		runtime.persistGoal(runtime.activeGoal);
-		if (runtime.queueFrozen) ctx.ui.setStatus(STATUS_KEY, "queue off");
-		else runtime.updateStatus(ctx, runtime.activeGoal);
+		runtime.updateStatus(ctx, runtime.activeGoal);
 		runtime.restoreGoalWaitTimer(ctx);
-		return;
 	}
-	ctx.ui.setStatus(STATUS_KEY, undefined);
 }
 
 async function confirmLowerActiveLimit(
@@ -610,14 +496,6 @@ function isLimitSelection(value: string): value is LimitSelection {
 
 function visibilityLabel(value: GoalSettings["toolVisibility"]) {
 	return value === "always" ? "Always" : "After first goal";
-}
-
-function retainedGoalCount(runtime: GoalRuntime) {
-	return (
-		(runtime.activeGoal ? 1 : 0) +
-		runtime.queuedGoals.length +
-		(runtime.pendingQueueAction?.kind === "prioritize" ? 1 : 0)
-	);
 }
 
 function notifySettingsFailure(ctx: ExtensionCommandContext, settingsPath: string, error: unknown) {

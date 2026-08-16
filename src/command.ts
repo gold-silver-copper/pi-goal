@@ -1,21 +1,18 @@
 const MAX_OBJECTIVE_LENGTH = 4_000;
 
-export interface GoalCommandFeatures {
-	experimentalGoals?: boolean;
-}
+const REMOVED_QUEUE_COMMANDS = new Set([
+	"add",
+	"prioritize",
+	"drop-last",
+	"skip",
+	"push",
+	"unshift",
+	"pop",
+	"shift",
+]);
 
 export interface CommandResult {
-	kind:
-		| "start"
-		| "pause"
-		| "resume"
-		| "clear"
-		| "show"
-		| "edit"
-		| "add"
-		| "prioritize"
-		| "drop-last"
-		| "skip";
+	kind: "start" | "pause" | "resume" | "clear" | "show" | "edit";
 	objective?: string;
 	tokenBudget?: number;
 }
@@ -39,63 +36,32 @@ const GOAL_ARGUMENT_COMPLETIONS: readonly GoalArgumentCompletion[] = [
 	{ value: "status", label: "status", description: "Show the current goal" },
 	TOKEN_BUDGET_COMPLETION,
 ];
-const QUEUE_ARGUMENT_COMPLETIONS: readonly GoalArgumentCompletion[] = [
-	{ value: "add", label: "add", description: "Add a goal to the end of the queue" },
-	{
-		value: "prioritize",
-		label: "prioritize",
-		description: "Prioritize a new goal at the front of the queue",
-	},
-	{ value: "drop-last", label: "drop-last", description: "Remove the last goal" },
-	{ value: "skip", label: "skip", description: "Skip the current goal" },
-];
 
-export function completeGoalArguments(
-	argumentPrefix: string,
-	features: GoalCommandFeatures = {},
-): GoalArgumentCompletion[] | null {
+export function completeGoalArguments(argumentPrefix: string): GoalArgumentCompletion[] | null {
 	const prefix = argumentPrefix.trimStart();
-	const completions = features.experimentalGoals
-		? [
-				...GOAL_ARGUMENT_COMPLETIONS.slice(0, -1),
-				...QUEUE_ARGUMENT_COMPLETIONS,
-				TOKEN_BUDGET_COMPLETION,
-			]
-		: [...GOAL_ARGUMENT_COMPLETIONS];
-	if (prefix === "") return completions;
+	if (prefix === "") return [...GOAL_ARGUMENT_COMPLETIONS];
 
-	const objectiveOption = features.experimentalGoals
-		? /^(edit|add|prioritize)\s+(\S*)$/.exec(prefix)
-		: /^edit\s+(\S*)$/.exec(prefix);
+	const objectiveOption = /^edit\s+(\S*)$/.exec(prefix);
 	if (objectiveOption) {
-		const command = features.experimentalGoals ? (objectiveOption[1] ?? "edit") : "edit";
-		const optionPrefix = features.experimentalGoals
-			? (objectiveOption[2] ?? "")
-			: (objectiveOption[1] ?? "");
+		const optionPrefix = objectiveOption[1] ?? "";
 		return optionPrefix === "" || "--tokens".startsWith(optionPrefix)
 			? [
 					{
-						value: `${command} --tokens `,
+						value: "edit --tokens ",
 						label: "--tokens",
-						description:
-							command === "edit"
-								? "Set a token budget before the updated goal"
-								: "Set a token budget before the queued goal",
+						description: "Set a token budget before the updated goal",
 					},
 				]
 			: null;
 	}
 	if (/\s/.test(prefix)) return null;
-	const matches = completions.filter(
+	const matches = GOAL_ARGUMENT_COMPLETIONS.filter(
 		(item) => item.value.startsWith(prefix) || item.label.startsWith(prefix),
 	);
 	return matches.length > 0 ? matches : null;
 }
 
-export function parseCommand(
-	args: string,
-	features: GoalCommandFeatures = {},
-): CommandResult | string {
+export function parseCommand(args: string): CommandResult | string {
 	const tokens = tokenize(args.trim());
 	if (tokens.length === 0) return { kind: "show" };
 	const [first, ...rest] = tokens;
@@ -106,26 +72,15 @@ export function parseCommand(
 	if (first === "status") return rest.length === 0 ? { kind: "show" } : "Usage: /goal status";
 	if (first === "edit") return parseObjective("edit", rest);
 
-	if (features.experimentalGoals) {
-		if (first === "drop-last" || first === "pop") {
-			return rest.length === 0 ? { kind: "drop-last" } : "Usage: /goal drop-last";
-		}
-		if (first === "skip" || first === "shift") {
-			return rest.length === 0 ? { kind: "skip" } : "Usage: /goal skip";
-		}
-		if (first === "add" || first === "push") return parseObjective("add", rest);
-		if (first === "prioritize" || first === "unshift") {
-			return parseObjective("prioritize", rest);
-		}
-	}
-
 	return parseObjective("start", tokens);
 }
 
-function parseObjective(
-	kind: "start" | "edit" | "add" | "prioritize",
-	tokens: string[],
-): CommandResult | string {
+export function isRemovedQueueCommand(args: string) {
+	const [first] = tokenize(args.trim());
+	return first !== undefined && REMOVED_QUEUE_COMMANDS.has(first);
+}
+
+function parseObjective(kind: "start" | "edit", tokens: string[]): CommandResult | string {
 	let tokenBudget: number | undefined;
 	const objectiveTokens = [...tokens];
 	if (objectiveTokens[0] === "--tokens") {

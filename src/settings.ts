@@ -11,9 +11,6 @@ export type ContinuationLimit = number | null;
 
 export interface GoalSettings {
 	toolVisibility: GoalToolVisibility;
-	experimental: {
-		goals: boolean;
-	};
 	rpc: {
 		enabled: boolean;
 	};
@@ -25,15 +22,14 @@ export interface GoalSettings {
 
 export const DEFAULT_GOAL_SETTINGS: GoalSettings = {
 	toolVisibility: "after-first-goal",
-	experimental: { goals: false },
 	rpc: { enabled: false },
 	continuationLimits: { automaticTurns: 25, noProgressTurns: 3 },
 };
 
 export type GoalSettingsLoadResult =
-	| { kind: "missing" }
+	| { kind: "missing"; legacyExperimentalGoals: false }
 	| { kind: "invalid"; reason: string }
-	| { kind: "loaded"; settings: GoalSettings };
+	| { kind: "loaded"; settings: GoalSettings; legacyExperimentalGoals: boolean };
 
 export type GoalSettingsLoadIssue = Extract<GoalSettingsLoadResult, { kind: "invalid" }>;
 
@@ -50,23 +46,6 @@ export function normalizeGoalSettings(value: unknown): GoalSettings | undefined 
 		? Reflect.get(value, "toolVisibility")
 		: DEFAULT_GOAL_SETTINGS.toolVisibility;
 	if (!GOAL_TOOL_VISIBILITIES.includes(toolVisibility as GoalToolVisibility)) return undefined;
-
-	const experimentalValue = Object.hasOwn(value, "experimental")
-		? Reflect.get(value, "experimental")
-		: undefined;
-	if (
-		experimentalValue !== undefined &&
-		(typeof experimentalValue !== "object" ||
-			experimentalValue === null ||
-			Array.isArray(experimentalValue))
-	) {
-		return undefined;
-	}
-	const goals =
-		experimentalValue && Object.hasOwn(experimentalValue, "goals")
-			? Reflect.get(experimentalValue, "goals")
-			: DEFAULT_GOAL_SETTINGS.experimental.goals;
-	if (typeof goals !== "boolean") return undefined;
 
 	const rpcValue = Object.hasOwn(value, "rpc") ? Reflect.get(value, "rpc") : undefined;
 	if (
@@ -108,7 +87,6 @@ export function normalizeGoalSettings(value: unknown): GoalSettings | undefined 
 
 	return {
 		toolVisibility: toolVisibility as GoalToolVisibility,
-		experimental: { goals },
 		rpc: { enabled: rpcEnabled },
 		continuationLimits: { automaticTurns, noProgressTurns },
 	};
@@ -145,14 +123,12 @@ export function saveGoalSettings(
 		}
 	}
 
-	const experimental = ownRecord(raw.experimental) ?? {};
 	const rpc = ownRecord(raw.rpc) ?? {};
 	const continuationLimits = ownRecord(raw.continuationLimits) ?? {};
 	const document = `${JSON.stringify(
 		{
 			...raw,
 			toolVisibility: normalized.toolVisibility,
-			experimental: { ...experimental, goals: normalized.experimental.goals },
 			rpc: { ...rpc, enabled: normalized.rpc.enabled },
 			continuationLimits: {
 				...continuationLimits,
@@ -188,18 +164,26 @@ export function readGoalSettings(
 	try {
 		contents = readFileSync(settingsPath, "utf8");
 	} catch (error: unknown) {
-		if (isNodeError(error) && error.code === "ENOENT") return { kind: "missing" };
+		if (isNodeError(error) && error.code === "ENOENT") {
+			return { kind: "missing", legacyExperimentalGoals: false };
+		}
 		return { kind: "invalid", reason: `${settingsPath}: ${formatError(error)}` };
 	}
 
 	try {
-		const settings = normalizeGoalSettings(JSON.parse(contents) as unknown);
+		const parsed = JSON.parse(contents) as unknown;
+		const settings = normalizeGoalSettings(parsed);
 		return settings
-			? { kind: "loaded", settings }
+			? { kind: "loaded", settings, legacyExperimentalGoals: hasLegacyExperimentalGoals(parsed) }
 			: { kind: "invalid", reason: `${settingsPath}: invalid settings shape` };
 	} catch (error: unknown) {
 		return { kind: "invalid", reason: `${settingsPath}: ${formatError(error)}` };
 	}
+}
+
+function hasLegacyExperimentalGoals(value: unknown) {
+	const experimental = ownRecord(ownRecord(value)?.experimental);
+	return experimental?.goals === true;
 }
 
 function ownRecord(value: unknown): Record<string, unknown> | undefined {

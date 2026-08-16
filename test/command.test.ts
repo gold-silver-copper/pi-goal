@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { completeGoalArguments, parseCommand } from "../src/command.js";
+import { completeGoalArguments, isRemovedQueueCommand, parseCommand } from "../src/command.js";
 
-const QUEUE_FEATURE = { experimentalGoals: true } as const;
-
-test("default command parsing keeps queue words inside ordinary objectives", () => {
+test("command parsing keeps removed queue words inside ordinary objectives", () => {
 	for (const objective of [
 		"add docs",
 		"prioritize outage",
@@ -23,61 +21,47 @@ test("default command parsing keeps queue words inside ordinary objectives", () 
 	}
 
 	const completions = completeGoalArguments("") ?? [];
-	assert.equal(
-		completions.some(({ label }) => label === "add"),
-		false,
-	);
-	assert.equal(
-		completions.some(({ label }) => label === "push"),
-		false,
-	);
-});
-
-test("experimental queue commands normalize canonical names and hidden aliases", () => {
-	for (const [input, expected] of [
-		["add docs", { kind: "add", objective: "docs", tokenBudget: undefined }],
-		["push docs", { kind: "add", objective: "docs", tokenBudget: undefined }],
-		["prioritize outage", { kind: "prioritize", objective: "outage", tokenBudget: undefined }],
-		["unshift outage", { kind: "prioritize", objective: "outage", tokenBudget: undefined }],
-		["drop-last", { kind: "drop-last" }],
-		["pop", { kind: "drop-last" }],
-		["skip", { kind: "skip" }],
-		["shift", { kind: "skip" }],
-	] as const) {
-		assert.deepEqual(parseCommand(input, QUEUE_FEATURE), expected);
-	}
-
-	assert.deepEqual(parseCommand("add --tokens 2k docs", QUEUE_FEATURE), {
-		kind: "add",
-		objective: "docs",
-		tokenBudget: 2_000,
-	});
-	assert.deepEqual(parseCommand("prioritize --tokens 3k outage", QUEUE_FEATURE), {
-		kind: "prioritize",
-		objective: "outage",
-		tokenBudget: 3_000,
-	});
-});
-
-test("experimental autocomplete exposes intent names but keeps aliases hidden", () => {
-	const completions = completeGoalArguments("", QUEUE_FEATURE) ?? [];
-	assert.deepEqual(
-		completions
-			.filter(({ label }) => ["add", "prioritize", "drop-last", "skip"].includes(label))
-			.map(({ label }) => label),
-		["add", "prioritize", "drop-last", "skip"],
-	);
-	for (const alias of ["push", "unshift", "pop", "shift"]) {
+	for (const label of [
+		"add",
+		"prioritize",
+		"drop-last",
+		"skip",
+		"push",
+		"unshift",
+		"pop",
+		"shift",
+	]) {
 		assert.equal(
-			completions.some(({ label }) => label === alias),
+			completions.some((completion) => completion.label === label),
 			false,
 		);
 	}
-	assert.deepEqual(completeGoalArguments("add ", QUEUE_FEATURE), [
+});
+
+test("removed queue command detector recognizes legacy command words", () => {
+	for (const input of [
+		"add docs",
+		"prioritize outage",
+		"drop-last",
+		"skip",
+		"push docs",
+		"unshift outage",
+		"pop",
+		"shift",
+	]) {
+		assert.equal(isRemovedQueueCommand(input), true);
+	}
+	for (const input of ["", "edit add docs", "status", "--tokens 10k add docs", "address docs"]) {
+		assert.equal(isRemovedQueueCommand(input), false);
+	}
+});
+
+test("edit autocomplete exposes token budget for updated objective", () => {
+	assert.deepEqual(completeGoalArguments("edit "), [
 		{
-			value: "add --tokens ",
+			value: "edit --tokens ",
 			label: "--tokens",
-			description: "Set a token budget before the queued goal",
+			description: "Set a token budget before the updated goal",
 		},
 	]);
 });

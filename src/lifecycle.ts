@@ -1,10 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentTokenTotal } from "./accounting.js";
-import type { GoalCommandController } from "./commands.js";
 import { notifyTerminal } from "./errors.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
-import { buildGoalPrompt, buildGoalSystemPrompt } from "./prompts.js";
-import { activateQueuedGoal } from "./queue.js";
+import { buildGoalSystemPrompt } from "./prompts.js";
 import type { GoalRunController } from "./run-protocol.js";
 import {
 	type AssistantMessageLike,
@@ -25,8 +23,8 @@ import {
 import { hasAssistantToolCall } from "./safety.js";
 import { DEFAULT_GOAL_SETTINGS, readGoalSettings } from "./settings.js";
 
-const EXPERIMENTAL_GOALS_WARNING =
-	"Experimental ordered goals are enabled for pi-goal. Queue behavior and persisted state may change.";
+const REMOVED_QUEUE_WARNING =
+	"Ordered goal queue has been removed. Use /goal edit to reprioritize one active objective instead. Example: task b is complete; do task a next, then task c and task d.";
 
 interface GoalLifecycleOptions {
 	settingsPath?: string;
@@ -35,7 +33,6 @@ interface GoalLifecycleOptions {
 export function registerGoalLifecycle(
 	pi: ExtensionAPI,
 	runtime: GoalRuntime,
-	commands: GoalCommandController,
 	runController: GoalRunController,
 	options: GoalLifecycleOptions = {},
 ) {
@@ -50,10 +47,8 @@ export function registerGoalLifecycle(
 		runtime.clearGoalRecovery();
 		runtime.clearBudgetWrapUp();
 		runtime.clearStaleGoalToolCallBlock();
-		runtime.queuedGoals = [];
-		runtime.pendingQueueAction = undefined;
-		runtime.queueFrozen = false;
-		runtime.queueFreezeAwaitingSettle = false;
+		runtime.legacyQueueState = undefined;
+		runtime.legacyExperimentalGoalsSetting = false;
 		runtime.clearTerminalDetails();
 		const previousToolVisibility = runtime.settings.toolVisibility;
 		const settingsResult = readGoalSettings(options.settingsPath);
@@ -67,8 +62,10 @@ export function registerGoalLifecycle(
 				"warning",
 			);
 		}
-		if (runtime.settings.experimental.goals) {
-			notifyTerminal(ctx.ui, EXPERIMENTAL_GOALS_WARNING, "warning");
+		runtime.legacyExperimentalGoalsSetting =
+			settingsResult.kind !== "invalid" && settingsResult.legacyExperimentalGoals;
+		if (runtime.legacyExperimentalGoalsSetting) {
+			notifyTerminal(ctx.ui, REMOVED_QUEUE_WARNING, "warning");
 		}
 		try {
 			runtime.toolPolicy.prepareSessionStart(
@@ -85,30 +82,18 @@ export function registerGoalLifecycle(
 
 		const loaded = loadGoalStateFromSession(ctx);
 		runtime.activeGoal = loaded.goal;
-		runtime.queuedGoals = loaded.queue;
-		runtime.pendingQueueAction = loaded.pendingAction;
-		runtime.queueFrozen = loaded.hasExperimentalQueueState && !runtime.settings.experimental.goals;
+		runtime.legacyQueueState = loaded.legacyQueueState;
 		runController.bindSession(ctx);
-		if (runtime.queueFrozen) {
-			if (runtime.activeGoal) runtime.persistGoal(runtime.activeGoal);
-			ctx.ui.setStatus(STATUS_KEY, "queue off");
-			notifyTerminal(
-				ctx.ui,
-				"An experimental goal queue is frozen because experimental.goals is disabled. Re-enable it and run /reload to continue, or use /goal clear.",
-				"warning",
-			);
+		if (runtime.legacyQueueState) {
+			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, false);
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			notifyTerminal(ctx.ui, REMOVED_QUEUE_WARNING, "warning");
 			return;
 		}
 
-		let startRestoredQueuedGoal = false;
-		if (runtime.activeGoal?.status === "queued" && !runtime.pendingQueueAction) {
-			runtime.activeGoal = activateQueuedGoal(runtime.activeGoal, currentTokenTotal(ctx));
-			startRestoredQueuedGoal = runtime.activeGoal.status === "active";
-		}
-		if (runtime.pendingQueueAction) await commands.dispatchPendingQueueActionIfSettled(ctx);
 		if (runtime.activeGoal) {
 			if (runtime.activeGoal.status === "active" && runtime.activeGoal.safetyResetPending) {
-				// Resume/edit activation is persisted before its queued prompt starts. A
+				// Resume/edit activation is persisted before its owned prompt starts. A
 				// reload must commit that promised reset before enforcing the old limits.
 				runtime.activeGoal = resetGoalSafetyEpoch(runtime.activeGoal);
 			}
@@ -128,23 +113,6 @@ export function registerGoalLifecycle(
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
 			runtime.restoreGoalWaitTimer(ctx);
-			if (startRestoredQueuedGoal) {
-				const restoredGoal = runtime.activeGoal;
-				const sent = await runtime.sendOwnedGoalPrompt(
-					ctx,
-					restoredGoal.id,
-					buildGoalPrompt(restoredGoal),
-					false, // Reloaded queue activation preserves its persisted safety epoch.
-				);
-				if (!sent && runtime.activeGoal?.id === restoredGoal.id) {
-					runtime.stopActiveGoal(ctx, {
-						kind: "activation_rollback",
-						expectedGoalId: restoredGoal.id,
-						restoreGoal: restoredGoal,
-						abortTurn: false,
-					});
-				}
-			}
 		} else {
 			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, false);
 			ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -156,7 +124,7 @@ export function registerGoalLifecycle(
 		runtime.closeMenuSession();
 		runtime.clearGoalWaitTimer();
 		if (runtime.activeGoal) {
-			if (!runtime.queueFrozen && runtime.activeGoal.status === "active") {
+			if (runtime.activeGoal.status === "active") {
 				runtime.recordGoalUsage(runtime.activeGoal, ctx, false);
 			}
 			runtime.persistGoal(runtime.activeGoal);
@@ -169,17 +137,14 @@ export function registerGoalLifecycle(
 		runtime.clearBudgetWrapUp();
 		runtime.clearStaleGoalToolCallBlock();
 		runtime.activeGoal = undefined;
-		runtime.queuedGoals = [];
-		runtime.pendingQueueAction = undefined;
-		runtime.queueFrozen = false;
-		runtime.queueFreezeAwaitingSettle = false;
+		runtime.legacyQueueState = undefined;
+		runtime.legacyExperimentalGoalsSetting = false;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		runtime.clearCompletionStatusTimer();
 		runtime.clearTerminalDetails();
 	});
 
 	pi.on("session_before_compact", (event, ctx) => {
-		if (runtime.queueFrozen) return;
 		if (runtime.activeGoal?.status === "budget_limited") {
 			if ((event as { willRetry?: boolean }).willRetry === true) return { cancel: true as const };
 			return;
@@ -189,32 +154,23 @@ export function registerGoalLifecycle(
 		runtime.cancelContinuationWork();
 		runtime.persistGoal(runtime.activeGoal);
 		runtime.updateStatus(ctx, runtime.activeGoal);
-		if (runtime.pendingQueueAction) return;
 		if (runtime.limitActiveGoalForBudget(ctx, false)) return { cancel: true as const };
 	});
 
 	pi.on("session_compact", async (event, ctx) => {
-		if (runtime.queueFrozen) return;
 		if (runtime.activeGoal?.status !== "active") {
 			runtime.clearGoalRecovery();
-			if (runtime.pendingQueueAction) await commands.dispatchPendingQueueActionIfSettled(ctx);
 			return;
 		}
 
 		const restoredState = loadGoalStateFromSession(ctx);
 		if (restoredState.goal?.id === runtime.activeGoal.id) {
 			runtime.activeGoal = restoredState.goal;
-			runtime.queuedGoals = restoredState.queue;
-			runtime.pendingQueueAction = restoredState.pendingAction;
 		}
 		const usageRecorded = runtime.recordGoalUsage(runtime.activeGoal, ctx);
 		if (usageRecorded) {
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
-		}
-		if (runtime.pendingQueueAction) {
-			await commands.dispatchPendingQueueActionIfSettled(ctx);
-			return;
 		}
 		if (!usageRecorded) return;
 		if (runtime.limitActiveGoalForBudget(ctx, false)) return;
@@ -239,7 +195,6 @@ export function registerGoalLifecycle(
 			) {
 				return { action: "handled" as const };
 			}
-			if (runtime.queueFrozen) return;
 			// Streaming input is queued before its model work starts. Keep owned
 			// markers pending for message_start, and track non-goal delivery mode so a
 			// steer cannot consume a later follow-up's cleanup protection.
@@ -252,7 +207,6 @@ export function registerGoalLifecycle(
 			runtime.clearGoalRecovery();
 			return;
 		}
-		if (runtime.queueFrozen) return;
 		if (/^\/goal(?:\s|$)/u.test(event.text.trimStart())) return;
 		if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 		if (event.streamingBehavior === "followUp") {
@@ -340,17 +294,6 @@ export function registerGoalLifecycle(
 
 	pi.on("tool_call", (event, ctx) => {
 		runtime.markAgentToolAttempted();
-		if (runtime.queueFrozen) {
-			if (!runtime.toolPolicy.isGoalToolName(event.toolName)) return;
-			// Blocking alone feeds an error tool result back to the model. Abort too so
-			// stale Goal calls cannot loop while the experimental queue remains frozen.
-			abortCurrentTurn(ctx);
-			return {
-				block: true,
-				reason:
-					"The experimental goal queue is frozen. Re-enable experimental.goals and run /reload, or use /goal clear.",
-			};
-		}
 		if (
 			runtime.activeGoal?.status === "budget_limited" &&
 			runtime.budgetWrapUp?.goalId === runtime.activeGoal.id &&
@@ -380,7 +323,6 @@ export function registerGoalLifecycle(
 	});
 
 	pi.on("tool_execution_end", (_event, ctx) => {
-		if (runtime.queueFrozen) return;
 		if (
 			runtime.activeGoal?.status === "budget_limited" &&
 			runtime.budgetWrapUp?.goalId === runtime.activeGoal.id &&
@@ -402,7 +344,6 @@ export function registerGoalLifecycle(
 
 	pi.on("before_agent_start", (event, ctx) => {
 		runtime.clearAgentRun();
-		if (runtime.queueFrozen) return;
 		// Pi-owned retries emit agent_start directly. Reaching a normal prompt
 		// boundary means cleanup no longer owns the next run, so the hard-cap guard
 		// must not abort it.
@@ -434,38 +375,8 @@ export function registerGoalLifecycle(
 			: activeGoalRecovery && runtime.goalRecovery?.automaticOwner
 				? "automatic"
 				: "manual";
-		if (
-			runtime.pendingQueueAction?.kind === "prioritize" &&
-			!activeBudgetWrapUp &&
-			!activeGoalRecovery
-		) {
-			// A turn that starts after priority intent is committed belongs to neither
-			// the displaced goal nor the not-yet-activated urgent goal. Persist the
-			// displaced goal's final accounting boundary so reload cannot absorb this run.
-			if (!runtime.pendingQueueAction.displacedUsageFinalized) {
-				if (runtime.activeGoal?.status === "active") {
-					runtime.recordGoalUsage(runtime.activeGoal, ctx, false);
-				}
-				runtime.pendingQueueAction.displacedUsageFinalized = true;
-				if (runtime.activeGoal) {
-					runtime.persistGoal(runtime.activeGoal);
-					runtime.updateStatus(ctx, runtime.activeGoal);
-				}
-			}
-			runtime.beginAgentRun(null, undefined);
-			if (ownedPromptGoalId) abortCurrentTurn(ctx);
-			return;
-		}
 		if (activeBudgetWrapUp && runtime.activeGoal) {
 			runtime.beginAgentRun(runtime.activeGoal.id, "manual");
-			return;
-		}
-		if (
-			runtime.pendingQueueAction?.kind === "advance" &&
-			runtime.pendingQueueAction.goalId === runtime.activeGoal?.id
-		) {
-			runtime.beginAgentRun(ownedPromptGoalId ?? runtime.activeGoal.id, runOrigin);
-			if (ownedPromptGoalId) abortCurrentTurn(ctx);
 			return;
 		}
 		if (ownedPromptGoalId && ownedPromptGoalId !== runtime.activeGoal?.id) {
@@ -494,7 +405,6 @@ export function registerGoalLifecycle(
 	});
 
 	pi.on("agent_start", (_event, _ctx) => {
-		if (runtime.queueFrozen) return;
 		const activeGoal = runtime.activeGoal;
 		if (
 			activeGoal &&
@@ -514,13 +424,12 @@ export function registerGoalLifecycle(
 	});
 
 	pi.on("turn_end", (event, ctx) => {
-		if (runtime.queueFrozen) return;
 		runtime.recordAutomaticTurn(ctx, event.message);
 	});
 
 	pi.on("agent_end", (event, ctx) => {
 		const run = runtime.finishAgentRun();
-		if (runtime.queueFrozen || run.goalId === null) return;
+		if (run.goalId === null) return;
 		if (!runtime.canRecordGoalUsage() && !runtime.hasActiveBudgetWrapUp()) return;
 		if (run.goalId && run.goalId !== runtime.activeGoal?.id) return;
 		if (!runtime.activeGoal) return;
@@ -535,15 +444,6 @@ export function registerGoalLifecycle(
 			return;
 		}
 		if (runtime.activeGoal.status !== "active") return;
-		if (
-			runtime.pendingQueueAction?.kind === "advance" &&
-			runtime.pendingQueueAction.goalId === runtime.activeGoal.id
-		) {
-			runtime.recordGoalUsage(runtime.activeGoal, ctx);
-			runtime.persistGoal(runtime.activeGoal);
-			runtime.updateStatus(ctx, runtime.activeGoal);
-			return;
-		}
 
 		const goalId = runtime.activeGoal.id;
 		const alreadyAwaitingContinuation = runtime.hasContinuationWorkForGoal(goalId);
@@ -611,28 +511,13 @@ export function registerGoalLifecycle(
 
 		const currentGoal = runtime.activeGoal;
 		if (!currentGoal || currentGoal.id !== goalId || currentGoal.status !== "active") return;
-		if (runtime.pendingQueueAction?.kind === "prioritize") return;
 		runtime.requestContinuation(currentGoal);
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (runtime.queueFrozen) {
-			runtime.clearSettledSafetyTracking();
-			runtime.queueFreezeAwaitingSettle = false;
-			if (runtime.settings.experimental.goals) {
-				await commands.resumeQueueAfterUnfreeze(ctx);
-			}
-			return;
-		}
+	pi.on("agent_settled", (_event, ctx) => {
 		runtime.finalizeSettledRecovery(ctx);
-		let dispatchedQueueAction = false;
-		if (runtime.pendingQueueAction) {
-			dispatchedQueueAction = await commands.dispatchPendingQueueActionIfSettled(ctx);
-		}
-		if (!dispatchedQueueAction) {
-			const resumedWait = runtime.dispatchDueGoalWait(ctx);
-			if (!resumedWait) runtime.dispatchContinuationIfSettled(ctx);
-		}
+		const resumedWait = runtime.dispatchDueGoalWait(ctx);
+		if (!resumedWait) runtime.dispatchContinuationIfSettled(ctx);
 		runtime.clearSettledSafetyTracking();
 	});
 

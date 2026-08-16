@@ -1,4 +1,4 @@
-import { checkpointGoalActiveTime, currentTokenTotal, formatTokenCount } from "./accounting.js";
+import { currentTokenTotal, formatTokenCount } from "./accounting.js";
 import { validateObjective } from "./command.js";
 import { notifyTerminal, safeGoalMenuText } from "./errors.js";
 import type { ActiveGoal } from "./persistence.js";
@@ -9,15 +9,6 @@ import {
 	buildWaitingResumePrompt,
 } from "./prompts.js";
 import {
-	activateQueuedGoal,
-	appendGoal,
-	createQueuedGoal,
-	dropLastGoal as dropLastQueuedGoal,
-	goalQueueIdentity,
-	prioritizeGoal as prioritizeQueuedGoal,
-	skipGoal as skipQueuedGoal,
-} from "./queue.js";
-import {
 	blocksStaleGoalToolCalls,
 	createGoal,
 	editedGoalStatus,
@@ -25,7 +16,6 @@ import {
 	formatError,
 	type GoalRuntime,
 	goalSummary,
-	hasPendingMessages,
 	isResumableGoalStatus,
 	nextGoalInstance,
 	queueGoalSafetyReset,
@@ -61,38 +51,20 @@ export class GoalCommandController {
 
 		const existingGoal =
 			this.runtime.activeGoal?.status !== "complete" ? this.runtime.activeGoal : undefined;
-		const existingQueuedGoals = [...this.runtime.queuedGoals];
-		const existingQueueIdentity = goalQueueIdentity(
-			this.runtime.activeGoal,
-			this.runtime.queuedGoals,
-			this.runtime.pendingQueueAction,
-		);
 		if (existingGoal) {
-			const queuedRemovalPreview =
-				existingQueuedGoals.length > 0
-					? `\n\nQueued goals also removed:\n${existingQueuedGoals
-							.map((goal, index) => `${index + 1}. ${safeGoalMenuText(goal.text, 4_000)}`)
-							.join("\n")}`
-					: "";
 			const shouldReplace = await ctx.ui.confirm(
 				"Replace goal?",
-				`Current goal: ${safeGoalMenuText(existingGoal.text, 4_000)}${queuedRemovalPreview}\n\nNew goal: ${safeGoalMenuText(objective, 4_000)}`,
+				`Current goal: ${safeGoalMenuText(existingGoal.text, 4_000)}\n\nNew goal: ${safeGoalMenuText(objective, 4_000)}`,
 			);
 			if (!shouldReplace) {
 				notifyTerminal(ctx.ui, `Goal kept: ${existingGoal.text}`, "info");
 				return;
 			}
 			if (isRequestCurrent && !isRequestCurrent()) return;
-			if (
-				goalQueueIdentity(
-					this.runtime.activeGoal,
-					this.runtime.queuedGoals,
-					this.runtime.pendingQueueAction,
-				) !== existingQueueIdentity
-			) {
+			if (this.runtime.activeGoal?.id !== existingGoal.id) {
 				notifyTerminal(
 					ctx.ui,
-					"The goal queue changed while confirmation was open. Try again.",
+					"The active goal changed while confirmation was open. Try again.",
 					"warning",
 				);
 				return;
@@ -116,8 +88,7 @@ export class GoalCommandController {
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
 		this.runtime.clearStaleGoalToolCallBlock();
-		this.runtime.queuedGoals = [];
-		this.runtime.pendingQueueAction = undefined;
+		this.runtime.legacyQueueState = undefined;
 		this.runtime.activeGoal = createGoal(objective, tokenBudget, currentTokenTotal(ctx));
 		const startedGoal = this.runtime.activeGoal;
 		onActivated?.(startedGoal);
@@ -142,7 +113,6 @@ export class GoalCommandController {
 			if (this.runtime.activeGoal?.id === startedGoal.id) {
 				rolledBackStartedGoal = true;
 				if (existingGoal) {
-					this.runtime.queuedGoals = existingQueuedGoals;
 					this.runtime.recordGoalUsage(existingGoal, ctx);
 					if (existingGoal.status === "active" && existingGoal.waiting) {
 						this.runtime.activeGoal = existingGoal;
@@ -195,241 +165,6 @@ export class GoalCommandController {
 					: `Automatic work pauses after ${automaticLimit} responses; open /goal to monitor progress.`
 			}`,
 			automaticLimit === null ? "warning" : "info",
-		);
-	}
-
-	async addGoal(objective: string, tokenBudget: number | undefined, ctx: StatusContext) {
-		const validationError = validateObjective(objective);
-		if (validationError) {
-			notifyTerminal(ctx.ui, validationError, "warning");
-			return;
-		}
-		if (!this.runtime.activeGoal) {
-			await this.startGoal(objective, tokenBudget, ctx);
-			return;
-		}
-		this.runtime.queuedGoals = appendGoal(
-			this.runtime.queuedGoals,
-			createQueuedGoal(objective, tokenBudget),
-		);
-		this.runtime.persistGoal(this.runtime.activeGoal);
-		notifyTerminal(
-			ctx.ui,
-			`Goal added at position ${this.runtime.queuedGoals.length + 1}: ${objective}`,
-			"info",
-		);
-	}
-
-	async prioritizeGoal(objective: string, tokenBudget: number | undefined, ctx: StatusContext) {
-		const validationError = validateObjective(objective);
-		if (validationError) {
-			notifyTerminal(ctx.ui, validationError, "warning");
-			return;
-		}
-		if (!this.runtime.activeGoal) {
-			await this.startGoal(objective, tokenBudget, ctx);
-			return;
-		}
-		this.runtime.clearGoalWaitTimer();
-		this.runtime.cancelContinuationWork();
-		this.runtime.pendingQueueAction = { kind: "prioritize", objective, tokenBudget };
-		this.runtime.persistGoal(this.runtime.activeGoal);
-		if (ctx.isIdle?.() !== true || hasPendingMessages(ctx)) {
-			notifyTerminal(ctx.ui, `Priority goal queued until Pi settles: ${objective}`, "info");
-			return;
-		}
-		await this.dispatchPendingQueueActionIfSettled(ctx);
-	}
-
-	dropLastGoal(ctx: StatusContext) {
-		const currentGoal = this.runtime.activeGoal;
-		if (!currentGoal) {
-			notifyTerminal(ctx.ui, "No goals to drop.", "info");
-			return;
-		}
-		const result = dropLastQueuedGoal(currentGoal, this.runtime.queuedGoals);
-		if (!result.goal) {
-			this.runtime.clearActiveGoal(ctx);
-			notifyTerminal(
-				ctx.ui,
-				`Goal dropped: ${result.removed?.text ?? currentGoal.text}`,
-				"warning",
-			);
-			return;
-		}
-		this.runtime.queuedGoals = result.queue;
-		this.runtime.persistGoal(result.goal);
-		notifyTerminal(ctx.ui, `Goal dropped: ${result.removed?.text ?? "unknown goal"}`, "warning");
-	}
-
-	async skipGoal(ctx: StatusContext) {
-		const currentGoal = this.runtime.activeGoal;
-		if (!currentGoal) {
-			notifyTerminal(ctx.ui, "No goals to skip.", "info");
-			return;
-		}
-		if (this.runtime.queuedGoals.length === 0) {
-			this.runtime.clearActiveGoal(ctx);
-			notifyTerminal(ctx.ui, `Goal skipped: ${currentGoal.text}. No goals remain.`, "warning");
-			return;
-		}
-		if (currentGoal.status === "active") this.runtime.recordGoalUsage(currentGoal, ctx);
-		this.runtime.clearGoalWaitTimer();
-		this.runtime.cancelContinuationWork();
-		this.runtime.clearGoalRecovery();
-		this.runtime.clearBudgetWrapUp();
-		this.runtime.clearStaleGoalToolCallBlock();
-		this.runtime.pendingQueueAction = {
-			kind: "advance",
-			goalId: currentGoal.id,
-			reason: "skip",
-			completedText: currentGoal.text,
-		};
-		this.runtime.persistGoal(currentGoal);
-		notifyTerminal(ctx.ui, `Goal skip queued until Pi settles: ${currentGoal.text}`, "info");
-		if (ctx.isIdle?.() === true && !hasPendingMessages(ctx)) {
-			await this.dispatchPendingQueueActionIfSettled(ctx);
-		}
-	}
-
-	async resumeQueueAfterUnfreeze(ctx: StatusContext) {
-		if (this.runtime.queueFreezeAwaitingSettle) return false;
-		this.runtime.queueFrozen = false;
-		this.runtime.queueFreezeAwaitingSettle = false;
-		this.runtime.guardAbortGoalId = undefined;
-		this.runtime.clearStaleGoalToolCallBlock();
-		if (this.runtime.activeGoal) {
-			if (
-				this.runtime.activeGoal.status === "active" &&
-				!this.runtime.activeGoal.waiting &&
-				this.runtime.activeGoal.activeStartedAt === undefined
-			) {
-				const now = Date.now();
-				checkpointGoalActiveTime(this.runtime.activeGoal, now, true);
-				this.runtime.activeGoal.updatedAt = now;
-			}
-			this.runtime.persistGoal(this.runtime.activeGoal);
-			this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-			this.runtime.restoreGoalWaitTimer(ctx);
-		} else {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
-		}
-		if (this.runtime.pendingQueueAction) {
-			return this.dispatchPendingQueueActionIfSettled(ctx);
-		}
-		const goal = this.runtime.activeGoal;
-		if (goal?.status !== "active") return false;
-		this.runtime.requestContinuation(goal);
-		return this.runtime.dispatchContinuationIfSettled(ctx);
-	}
-
-	async dispatchPendingQueueActionIfSettled(ctx: StatusContext) {
-		const pending = this.runtime.pendingQueueAction;
-		if (!pending || this.runtime.queueFrozen) return false;
-		if (ctx.isIdle?.() !== true || hasPendingMessages(ctx)) return false;
-		if (pending.kind === "prioritize") {
-			this.runtime.pendingQueueAction = undefined;
-			return this.activatePrioritizedGoal(
-				pending.objective,
-				pending.tokenBudget,
-				ctx,
-				pending.displacedUsageFinalized === true,
-			);
-		}
-		if (
-			!this.runtime.activeGoal ||
-			this.runtime.activeGoal.id !== pending.goalId ||
-			(this.runtime.activeGoal.status !== "complete" && pending.reason === "complete")
-		) {
-			this.runtime.pendingQueueAction = undefined;
-			if (this.runtime.activeGoal) this.runtime.persistGoal(this.runtime.activeGoal);
-			return false;
-		}
-
-		const previousText = pending.completedText;
-		const reason = pending.reason;
-		this.runtime.pendingQueueAction = undefined;
-		this.runtime.cancelContinuationWork();
-		this.runtime.clearGoalRecovery();
-		this.runtime.clearBudgetWrapUp();
-		this.runtime.clearStaleGoalToolCallBlock();
-		const next = skipQueuedGoal(this.runtime.queuedGoals);
-		this.runtime.queuedGoals = next.queue;
-		this.runtime.activeGoal = next.goal
-			? activateQueuedGoal(next.goal, currentTokenTotal(ctx))
-			: undefined;
-		if (!this.runtime.activeGoal) {
-			this.runtime.clearActiveGoal(ctx);
-			notifyTerminal(
-				ctx.ui,
-				reason === "complete"
-					? `Goal complete: ${previousText}. No goals remain.`
-					: `Goal skipped: ${previousText}. No goals remain.`,
-				"info",
-			);
-			return true;
-		}
-
-		this.runtime.persistGoal(this.runtime.activeGoal);
-		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-		if (this.runtime.activeGoal.status !== "active") {
-			if (blocksStaleGoalToolCalls(this.runtime.activeGoal.status)) {
-				this.runtime.blockStaleGoalToolCalls();
-			}
-			notifyTerminal(
-				ctx.ui,
-				`${reason === "complete" ? "Goal complete" : "Goal skipped"}: ${previousText}. Next goal remains ${this.runtime.activeGoal.status}: ${this.runtime.activeGoal.text}`,
-				"info",
-			);
-			return true;
-		}
-
-		try {
-			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
-		} catch (error) {
-			this.runtime.stopActiveGoal(ctx, {
-				kind: "activation_rollback",
-				expectedGoalId: this.runtime.activeGoal.id,
-				restoreGoal: this.runtime.activeGoal,
-				abortTurn: false,
-			});
-			notifyTerminal(ctx.ui, `Cannot start the next /goal: ${formatError(error)}`, "error");
-			return false;
-		}
-		const activatedGoal = this.runtime.activeGoal;
-		const sent = await this.runtime.sendOwnedGoalPrompt(
-			ctx,
-			activatedGoal.id,
-			buildGoalPrompt(activatedGoal),
-			false, // Queue reactivation preserves its persisted safety epoch.
-		);
-		if (!sent && this.runtime.activeGoal?.id === activatedGoal.id) {
-			this.runtime.stopActiveGoal(ctx, {
-				kind: "activation_rollback",
-				expectedGoalId: activatedGoal.id,
-				restoreGoal: activatedGoal,
-				abortTurn: false,
-			});
-			notifyTerminal(
-				ctx.ui,
-				`Next goal paused after prompt delivery failed: ${activatedGoal.text}`,
-				"warning",
-			);
-			return false;
-		}
-		notifyTerminal(
-			ctx.ui,
-			`${reason === "complete" ? "Goal complete" : "Goal skipped"}: ${previousText}. Started next goal: ${activatedGoal.text}`,
-			"info",
-		);
-		return true;
-	}
-
-	notifyFrozenQueue(ctx: StatusContext) {
-		notifyTerminal(
-			ctx.ui,
-			"The experimental goal queue is frozen. Re-enable experimental.goals in pi-goal.json and run /reload, or use /goal clear.",
-			"warning",
 		);
 	}
 
@@ -571,13 +306,19 @@ export class GoalCommandController {
 
 	clearGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			notifyTerminal(ctx.ui, "No active goal.", "info");
+			const hadLegacyQueue = this.runtime.legacyQueueState !== undefined;
+			this.runtime.legacyQueueState = undefined;
 			this.runtime.cancelContinuationWork();
 			this.runtime.clearGoalRecovery();
 			this.runtime.clearBudgetWrapUp();
 			this.runtime.clearStaleGoalToolCallBlock();
 			this.runtime.clearPersistedGoal(ctx.cwd);
 			ctx.ui.setStatus(STATUS_KEY, undefined);
+			notifyTerminal(
+				ctx.ui,
+				hadLegacyQueue ? "Removed legacy ordered goal queue state." : "No active goal.",
+				hadLegacyQueue ? "warning" : "info",
+			);
 			return;
 		}
 
@@ -684,27 +425,28 @@ export class GoalCommandController {
 
 	showGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			const message = "Usage: /goal <objective>\nNo goal is currently set.";
 			ctx.ui.setStatus(STATUS_KEY, undefined);
-			this.reportGoalStatus(ctx, message);
+			this.reportGoalStatus(ctx, this.emptyGoalMessage());
 			return;
 		}
-		if (!this.runtime.queueFrozen) {
-			this.runtime.recordGoalUsage(this.runtime.activeGoal, ctx);
-			this.runtime.persistGoal(this.runtime.activeGoal);
-			this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-		}
+		this.runtime.recordGoalUsage(this.runtime.activeGoal, ctx);
+		this.runtime.persistGoal(this.runtime.activeGoal);
+		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 		this.reportGoalStatus(
 			ctx,
-			goalSummary(
-				this.runtime.activeGoal,
-				this.runtime.queuedGoals,
-				this.runtime.settings.experimental.goals,
-				this.runtime.queueFrozen,
-				this.runtime.pendingQueueAction,
-				this.runtime.settings.continuationLimits.automaticTurns,
-			),
+			goalSummary(this.runtime.activeGoal, this.runtime.settings.continuationLimits.automaticTurns),
 		);
+	}
+
+	private emptyGoalMessage() {
+		const legacy = this.runtime.legacyQueueState;
+		if (!legacy) return "Usage: /goal <objective>\nNo goal is currently set.";
+		return [
+			"Ordered goal queue has been removed.",
+			`Legacy queue state with ${legacy.retainedGoals} retained ${legacy.retainedGoals === 1 ? "goal" : "goals"} will not run automatically.`,
+			"Use /goal edit to reprioritize an active objective, start a new /goal with the merged objective, or use /goal clear to discard the old queue state.",
+			'Example objective: "task b is complete; do task a next, then task c and task d."',
+		].join("\n");
 	}
 
 	private reportGoalStatus(ctx: StatusContext, message: string) {
@@ -714,101 +456,5 @@ export class GoalCommandController {
 			);
 		}
 		notifyTerminal(ctx.ui, message, "info");
-	}
-
-	private async activatePrioritizedGoal(
-		objective: string,
-		tokenBudget: number | undefined,
-		ctx: StatusContext,
-		displacedUsageFinalized = false,
-	) {
-		const currentGoal = this.runtime.activeGoal;
-		if (!currentGoal) {
-			await this.startGoal(objective, tokenBudget, ctx);
-			return true;
-		}
-		if (currentGoal.status === "active" && !displacedUsageFinalized) {
-			this.runtime.recordGoalUsage(currentGoal, ctx);
-		}
-		const previousGoal = { ...currentGoal };
-		const previousQueue = [...this.runtime.queuedGoals];
-		const visibilityBeforeActivation = this.runtime.toolPolicy.snapshot();
-		try {
-			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
-		} catch (error) {
-			notifyTerminal(ctx.ui, `Cannot prioritize /goal: ${formatError(error)}`, "error");
-			if (currentGoal.status === "complete") {
-				// Completion already committed, so retain the priority intent for a
-				// later /reload after the tool policy is restored.
-				this.runtime.pendingQueueAction = {
-					kind: "prioritize",
-					objective,
-					tokenBudget,
-					...(displacedUsageFinalized ? { displacedUsageFinalized: true } : {}),
-				};
-				this.runtime.persistGoal(currentGoal);
-			} else {
-				// Roll back an activation that never started. An active displaced goal
-				// cannot continue safely without its terminal tools, so make it resumable.
-				this.runtime.pendingQueueAction = undefined;
-				if (currentGoal.status === "active") {
-					this.runtime.pauseGoalForUnavailableTools(ctx, true, !displacedUsageFinalized);
-				} else {
-					this.runtime.persistGoal(currentGoal);
-				}
-			}
-			return false;
-		}
-
-		this.runtime.cancelContinuationWork();
-		this.runtime.clearGoalRecovery();
-		this.runtime.clearBudgetWrapUp();
-		this.runtime.clearStaleGoalToolCallBlock();
-		const prioritized = createGoal(objective, tokenBudget, currentTokenTotal(ctx));
-		const next =
-			currentGoal.status === "complete"
-				? { goal: prioritized, queue: [...this.runtime.queuedGoals] }
-				: prioritizeQueuedGoal(currentGoal, this.runtime.queuedGoals, prioritized);
-		this.runtime.activeGoal = next.goal;
-		this.runtime.queuedGoals = next.queue;
-		this.runtime.pendingQueueAction = undefined;
-		if (!this.runtime.activeGoal) return false;
-		this.runtime.persistGoal(this.runtime.activeGoal);
-		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-		const sent = await this.runtime.sendOwnedGoalPrompt(
-			ctx,
-			this.runtime.activeGoal.id,
-			buildGoalPrompt(this.runtime.activeGoal),
-		);
-		if (!sent && this.runtime.activeGoal.id === prioritized.id) {
-			this.runtime.queuedGoals = previousQueue;
-			if (previousGoal.status === "active" && previousGoal.waiting) {
-				this.runtime.activeGoal = previousGoal;
-				this.runtime.clearStaleGoalToolCallBlock();
-				this.runtime.persistGoal(previousGoal);
-				this.runtime.updateStatus(ctx, previousGoal);
-				this.runtime.restoreGoalWaitTimer(ctx);
-			} else if (previousGoal.status === "active") {
-				this.runtime.stopActiveGoal(ctx, {
-					kind: "activation_rollback",
-					expectedGoalId: prioritized.id,
-					restoreGoal: previousGoal,
-					abortTurn: true,
-				});
-			} else {
-				this.runtime.activeGoal = previousGoal;
-				if (previousGoal.status === "complete") {
-					this.runtime.pendingQueueAction = { kind: "prioritize", objective, tokenBudget };
-				} else if (blocksStaleGoalToolCalls(previousGoal.status)) {
-					this.runtime.blockStaleGoalToolCalls();
-				}
-				this.runtime.persistGoal(this.runtime.activeGoal);
-				this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-			}
-			this.runtime.toolPolicy.restore(visibilityBeforeActivation);
-			return false;
-		}
-		notifyTerminal(ctx.ui, `Goal prioritized: ${objective}`, "info");
-		return true;
 	}
 }

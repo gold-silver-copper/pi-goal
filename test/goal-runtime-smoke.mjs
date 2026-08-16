@@ -407,57 +407,6 @@ async function automaticRetryOwnershipScenario() {
 	}
 }
 
-async function orderedQueueScenario() {
-	const now = Date.now();
-	const harness = await createHarness(
-		[completionResponse, completionResponse],
-		{},
-		(sessionManager) => {
-			sessionManager.appendCustomEntry("goal-state", {
-				goal: {
-					id: crypto.randomUUID(),
-					text: "runtime queue head",
-					status: "active",
-					startedAt: now,
-					updatedAt: now,
-					iteration: 0,
-					tokensUsed: 0,
-					timeUsedSeconds: 0,
-					baselineTokens: 0,
-				},
-				queue: [
-					{
-						id: crypto.randomUUID(),
-						text: "runtime queue tail",
-						status: "queued",
-						startedAt: now,
-						updatedAt: now,
-						iteration: 0,
-						tokensUsed: 0,
-						timeUsedSeconds: 0,
-						baselineTokens: 0,
-					},
-				],
-			});
-		},
-		{ experimental: { goals: true } },
-	);
-	try {
-		const toolNames = harness.session.getAllTools().map(({ name }) => name);
-		assert.ok(toolNames.includes("goal_complete"));
-		assert.ok(toolNames.includes("goal_blocked"));
-		assert.equal(toolNames.includes("goals_complete"), false);
-		assert.equal(toolNames.includes("goals_blocked"), false);
-		await harness.session.prompt("continue the restored ordered queue");
-		await waitFor(() => harness.faux.state.callCount === 2, "ordered queue advancement");
-		await harness.session.agent.waitForIdle();
-		assert.equal(persistedGoalStatus(harness.session), null);
-		assert.equal(persistedGoalState(harness.session)?.queue, undefined);
-	} finally {
-		await harness.cleanup();
-	}
-}
-
 async function queuedInputScenario() {
 	const observedPrompts = [];
 	const harness = await createHarness(
@@ -542,67 +491,6 @@ async function pauseScenario() {
 				.filter((text) => text.includes("pi-goal-continuation:")).length,
 			0,
 		);
-	} finally {
-		await harness.cleanup();
-	}
-}
-
-async function frozenQueueBlockedToolAbortScenario() {
-	const observedSignals = [];
-	const now = Date.now();
-	const goalId = crypto.randomUUID();
-	const harness = await createHarness(
-		[
-			fauxAssistantMessage(
-				fauxToolCall("goal_complete", {
-					goal_id: goalId,
-					summary: "This frozen queue must not complete.",
-				}),
-			),
-			(_context, options) => {
-				observedSignals.push(options?.signal?.aborted === true);
-				return fauxAssistantMessage("Synthetic frozen-queue cleanup.");
-			},
-		],
-		{},
-		(sessionManager) => {
-			sessionManager.appendCustomEntry("goal-state", {
-				goal: {
-					id: goalId,
-					text: "frozen queue head",
-					status: "active",
-					startedAt: now,
-					updatedAt: now,
-					iteration: 0,
-					tokensUsed: 0,
-					timeUsedSeconds: 0,
-					baselineTokens: 0,
-				},
-				queue: [
-					{
-						id: crypto.randomUUID(),
-						text: "frozen queue tail",
-						status: "queued",
-						startedAt: now,
-						updatedAt: now,
-						iteration: 0,
-						tokensUsed: 0,
-						timeUsedSeconds: 0,
-						baselineTokens: 0,
-					},
-				],
-			});
-		},
-	);
-	try {
-		await harness.session.prompt("Simulate a stale frozen-queue tool call.");
-		await harness.session.agent.waitForIdle();
-		assert.ok(
-			harness.faux.state.callCount <= 2,
-			"frozen guard must allow at most one cleanup call",
-		);
-		assert.equal(observedSignals.includes(false), false, "any cleanup call must inherit abort");
-		assert.equal(persistedGoalStatus(harness.session), "active");
 	} finally {
 		await harness.cleanup();
 	}
@@ -835,11 +723,9 @@ await runawayNoProgressScenario();
 await automaticToolLoopLimitScenario();
 await retryAtHardLimitScenario();
 await automaticRetryOwnershipScenario();
-await orderedQueueScenario();
 await queuedInputScenario();
 await busyEditOwnershipScenario();
 await pauseScenario();
-await frozenQueueBlockedToolAbortScenario();
 await staleBlockedToolAbortScenario();
 await budgetBoundaryScenario();
 await budgetViolationScenario();
@@ -848,5 +734,5 @@ await managedRunRpcScenario();
 await managedRunDisabledScenario();
 await manualCompactionScenario();
 console.log(
-	"pi-goal runtime smoke: normal, runaway guards, retry and busy-edit ownership, ordered queue, queued input, pause, frozen-queue and stale blocked-tool aborts, managed-run RPC, bounded budget behavior, and manual compaction passed",
+	"pi-goal runtime smoke: normal, runaway guards, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, managed-run RPC, bounded budget behavior, and manual compaction passed",
 );

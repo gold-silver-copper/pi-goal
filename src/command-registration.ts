@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { completeGoalArguments, parseCommand } from "./command.js";
+import { completeGoalArguments, isRemovedQueueCommand, parseCommand } from "./command.js";
 import type { GoalCommandController } from "./commands.js";
 import { notifyTerminal, safeTerminalText } from "./errors.js";
 import type { GoalRuntime } from "./runtime.js";
@@ -28,14 +28,13 @@ export function registerGoalCommand(
 
 	pi.registerCommand("goal", {
 		description: "Run a goal to completion: /goal [--tokens 100k] <goal_to_complete>",
-		getArgumentCompletions: (prefix) =>
-			completeGoalArguments(prefix, {
-				experimentalGoals: runtime.settings.experimental.goals,
-			}),
+		getArgumentCompletions: (prefix) => completeGoalArguments(prefix),
 		handler: async (args, ctx) => {
-			const result = parseCommand(args, {
-				experimentalGoals: runtime.settings.experimental.goals,
-			});
+			if (runtime.hasLegacyQueueInterface() && isRemovedQueueCommand(args)) {
+				reportRemovedQueueCommand(ctx);
+				return;
+			}
+			const result = parseCommand(args);
 			if (typeof result === "string") {
 				reportCommandError(result, ctx);
 				return;
@@ -65,28 +64,10 @@ export function registerGoalCommand(
 					await showGoalSettings(runtime, menuCtx, {
 						settingsPath: options.settingsPath,
 						initialScreen: target,
-						onQueueUnfrozen: async (settingsCtx) => {
-							await commands.resumeQueueAfterUnfreeze(settingsCtx);
-						},
 					});
 				});
 				return;
 			}
-			if (runtime.queueFrozen) {
-				if (result.kind === "show") commands.showGoal(ctx);
-				else if (result.kind === "clear") commands.clearGoal(ctx);
-				else commands.notifyFrozenQueue(ctx);
-				return;
-			}
-			if (runtime.pendingQueueAction && result.kind !== "show" && result.kind !== "clear") {
-				notifyTerminal(
-					ctx.ui,
-					"A queued goal change is waiting for Pi to settle. Retry after it finishes.",
-					"warning",
-				);
-				return;
-			}
-
 			switch (result.kind) {
 				case "show":
 					commands.showGoal(ctx);
@@ -103,18 +84,6 @@ export function registerGoalCommand(
 				case "edit":
 					await commands.editGoal(result.objective ?? "", result.tokenBudget, ctx);
 					return;
-				case "add":
-					await commands.addGoal(result.objective ?? "", result.tokenBudget, ctx);
-					return;
-				case "prioritize":
-					await commands.prioritizeGoal(result.objective ?? "", result.tokenBudget, ctx);
-					return;
-				case "drop-last":
-					commands.dropLastGoal(ctx);
-					return;
-				case "skip":
-					await commands.skipGoal(ctx);
-					return;
 				case "start":
 					await commands.startGoal(result.objective ?? "", result.tokenBudget, ctx);
 					return;
@@ -127,6 +96,13 @@ function reportCommandError(message: string, ctx: ExtensionCommandContext) {
 	const safeMessage = safeTerminalText(message);
 	if (ctx.mode === "print" || ctx.mode === "json") throw new Error(safeMessage);
 	notifyTerminal(ctx.ui, safeMessage, "warning");
+}
+
+function reportRemovedQueueCommand(ctx: ExtensionCommandContext) {
+	const message =
+		"Ordered goal queue has been removed. Use /goal edit to reprioritize the active objective instead. Example: task b is complete; do task a next, then task c and task d.";
+	if (ctx.mode === "print" || ctx.mode === "json") throw new Error(message);
+	notifyTerminal(ctx.ui, message, "warning");
 }
 
 function captureMenuOwnership(runtime: GoalRuntime): () => boolean {

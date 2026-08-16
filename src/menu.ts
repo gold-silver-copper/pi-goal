@@ -7,8 +7,7 @@ import { notifyTerminal, safeGoalMenuText } from "./errors.js";
 
 export { safeGoalMenuText } from "./errors.js";
 
-import type { ActiveGoal, PendingQueueAction } from "./persistence.js";
-import { goalQueueIdentity } from "./queue.js";
+import type { ActiveGoal } from "./persistence.js";
 import { type GoalRuntime, goalSummary } from "./runtime.js";
 
 export const GOAL_MENU_ACTIONS = {
@@ -21,26 +20,14 @@ export const GOAL_MENU_ACTIONS = {
 	edit: "Edit goal…",
 	replace: "Replace goal…",
 	status: "View full status",
-	queue: "Queue…",
 	settings: "Settings…",
 	help: "Help",
 	clear: "Clear goal…",
 	close: "Close",
 } as const;
 
-const QUEUE_ACTIONS = {
-	add: "Add goal…",
-	prioritize: "Prioritize goal…",
-	skip: "Skip current goal…",
-	dropLast: "Drop last goal…",
-	back: "Back",
-} as const;
-
 interface GoalMenuRuntimeView {
 	activeGoal?: ActiveGoal;
-	queuedGoals: ActiveGoal[];
-	pendingQueueAction?: PendingQueueAction;
-	queueFrozen: boolean;
 	settings: GoalRuntime["settings"];
 	recordGoalUsage?: GoalRuntime["recordGoalUsage"];
 	persistGoal?: GoalRuntime["persistGoal"];
@@ -59,7 +46,6 @@ type GoalMenuScreen =
 	| "start-custom-budget"
 	| "increase-budget"
 	| "safety"
-	| "queue"
 	| "status"
 	| "help";
 type GoalMenuAction =
@@ -75,27 +61,18 @@ type GoalMenuAction =
 	| "replace"
 	| "settings"
 	| "clear"
-	| "queue-add"
-	| "queue-prioritize"
-	| "queue-skip"
-	| "queue-drop"
 	| "back";
 
 export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState {
 	const goal = runtime.activeGoal;
-	const queueCount = runtime.queuedGoals.length;
 	const pausedByAutomaticLimit =
 		goal?.status === "paused" && goal.safetyPauseCause === "continuation_limit";
 	const waitingReason = goal?.waiting ? safeGoalMenuText(goal.waiting.reason) : undefined;
-	const state = runtime.queueFrozen
-		? "Queue frozen"
-		: runtime.pendingQueueAction
-			? "Waiting for Pi to settle"
-			: pausedByAutomaticLimit
-				? "Paused — automatic-work limit reached"
-				: waitingReason
-					? `Waiting — ${waitingReason}`
-					: displayStatus(goal?.status);
+	const state = pausedByAutomaticLimit
+		? "Paused — automatic-work limit reached"
+		: waitingReason
+			? `Waiting — ${waitingReason}`
+			: displayStatus(goal?.status);
 	const automaticTurnLimit = runtime.settings.continuationLimits.automaticTurns;
 	const used = goal?.automaticModelTurns ?? 0;
 	const automaticResponses =
@@ -117,7 +94,6 @@ export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState 
 				...(pausedByAutomaticLimit
 					? ["Progress is saved. Review the safety limit before continuing."]
 					: []),
-				...(queueCount > 0 ? [`Queue: ${queueCount} queued`] : []),
 			].join("\n")
 		: [
 				`Goal · ${state}`,
@@ -126,19 +102,6 @@ export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState 
 					? "Automatic work is configured as Unlimited."
 					: `Automatic work is configured to pause after ${automaticTurnLimit} responses.`,
 			].join("\n");
-
-	if (runtime.queueFrozen || runtime.pendingQueueAction) {
-		return {
-			title,
-			actions: [
-				GOAL_MENU_ACTIONS.status,
-				GOAL_MENU_ACTIONS.settings,
-				GOAL_MENU_ACTIONS.help,
-				GOAL_MENU_ACTIONS.clear,
-				GOAL_MENU_ACTIONS.close,
-			],
-		};
-	}
 
 	const actions: string[] = [];
 	if (!goal || goal.status === "complete") {
@@ -158,9 +121,6 @@ export function buildGoalMenuState(runtime: GoalMenuRuntimeView): GoalMenuState 
 		actions.push(GOAL_MENU_ACTIONS.edit, GOAL_MENU_ACTIONS.replace);
 	}
 	if (goal) actions.push(GOAL_MENU_ACTIONS.status);
-	if (goal && (runtime.settings.experimental.goals || queueCount > 0)) {
-		actions.push(GOAL_MENU_ACTIONS.queue);
-	}
 	actions.push(GOAL_MENU_ACTIONS.settings, GOAL_MENU_ACTIONS.help);
 	if (goal) actions.push(GOAL_MENU_ACTIONS.clear);
 	actions.push(GOAL_MENU_ACTIONS.close);
@@ -186,14 +146,10 @@ export async function showGoalManager(
 	const { defineMenu, runMenu } = await import("@narumitw/pi-tui-kit");
 	if (!isMenuCurrent()) return;
 	let displayedGoal: ActiveGoal | undefined;
-	let startBudgetQueueIdentity = currentGoalQueueIdentity(runtime);
 	let displayedBudgetGoal: ActiveGoal | undefined;
 	let displayedBudgetValue: number | undefined;
 	let displayedBudgetUsage: number | undefined;
 	let displayedBudgetStatus: ActiveGoal["status"] | undefined;
-	let displayedQueueHead: ActiveGoal | undefined;
-	let displayedQueueFirst: ActiveGoal | undefined;
-	let displayedQueueLast: ActiveGoal | undefined;
 	const menu = defineMenu<undefined, GoalMenuScreen, GoalMenuAction, ExtensionCommandContext>({
 		start: "main",
 		screens: {
@@ -201,7 +157,6 @@ export async function showGoalManager(
 				refreshGoalMenuState(runtime, ctx);
 				const state = buildGoalMenuState(runtime);
 				displayedGoal = runtime.activeGoal;
-				startBudgetQueueIdentity = currentGoalQueueIdentity(runtime);
 				return {
 					kind: "actions",
 					title: "Goal",
@@ -286,7 +241,6 @@ export async function showGoalManager(
 				displayedGoal = goal;
 				const limit = runtime.settings.continuationLimits.automaticTurns;
 				const used = goal?.automaticModelTurns ?? 0;
-				const queueCount = runtime.queuedGoals.length;
 				return {
 					kind: "actions",
 					title: "Automatic work paused",
@@ -295,7 +249,7 @@ export async function showGoalManager(
 								automaticPauseSummary(used, limit),
 								`${safeGoalMenuText(goal.text)} is preserved.`,
 								`${formatInteger(goal.tokensUsed)} cumulative tokens and ${formatDuration(goal.timeUsedSeconds)} active time are preserved.`,
-								`The objective, usage, and ${queueCount} queued ${queueCount === 1 ? "goal is" : "goals are"} preserved.`,
+								"The objective and usage are preserved.",
 								limit === null
 									? "Continuing resets the counter to 0 and resumes with Unlimited automatic work."
 									: `Continuing resets the counter to 0 and allows up to ${limit} more automatic model responses.`,
@@ -322,47 +276,12 @@ export async function showGoalManager(
 					hint: "back",
 				};
 			},
-			queue: () => {
-				displayedQueueHead = runtime.activeGoal;
-				displayedQueueFirst = runtime.queuedGoals[0];
-				displayedQueueLast = runtime.queuedGoals.at(-1) ?? runtime.activeGoal;
-				return {
-					kind: "actions",
-					title: "Goal queue",
-					lines: [
-						`${runtime.queuedGoals.length + (runtime.activeGoal ? 1 : 0)} total`,
-						...(runtime.activeGoal
-							? [`Current: ${safeGoalMenuText(runtime.activeGoal.text)}`]
-							: []),
-					],
-					items: [
-						{ id: "add", label: QUEUE_ACTIONS.add, action: "queue-add" },
-						{ id: "prioritize", label: QUEUE_ACTIONS.prioritize, action: "queue-prioritize" },
-						...(runtime.queuedGoals.length > 0
-							? [
-									{ id: "skip", label: QUEUE_ACTIONS.skip, action: "queue-skip" as const },
-									{
-										id: "drop-last",
-										label: QUEUE_ACTIONS.dropLast,
-										action: "queue-drop" as const,
-									},
-								]
-							: []),
-						{ id: "back", label: QUEUE_ACTIONS.back, action: "back" },
-					],
-					hint: "back",
-				};
-			},
 			status: () => ({
 				kind: "detail",
 				title: "Goal status",
 				lines: runtime.activeGoal
 					? goalSummary(
 							runtime.activeGoal,
-							runtime.queuedGoals,
-							runtime.settings.experimental.goals,
-							runtime.queueFrozen,
-							runtime.pendingQueueAction,
 							runtime.settings.continuationLimits.automaticTurns,
 						).split("\n")
 					: ["No goal is currently set."],
@@ -384,12 +303,10 @@ export async function showGoalManager(
 				const budget = parseTokenBudget(itemId);
 				if (budget === undefined) return { kind: "rejected" };
 				return startBudgetedGoal(
-					runtime,
 					commands,
 					ctx,
 					budget,
 					runtime.settings.continuationLimits.automaticTurns,
-					startBudgetQueueIdentity,
 					signal,
 					isMenuCurrent,
 					"stay",
@@ -406,12 +323,10 @@ export async function showGoalManager(
 					return { kind: "rejected" };
 				}
 				return startBudgetedGoal(
-					runtime,
 					commands,
 					ctx,
 					budget,
 					runtime.settings.continuationLimits.automaticTurns,
-					startBudgetQueueIdentity,
 					signal,
 					isMenuCurrent,
 					"back",
@@ -517,74 +432,12 @@ export async function showGoalManager(
 				return { kind: "stay" };
 			},
 			clear: async () => {
-				const previewedQueue = goalQueueIdentity(
-					runtime.activeGoal,
-					runtime.queuedGoals,
-					runtime.pendingQueueAction,
-				);
+				const previewedGoal = runtime.activeGoal;
 				if (!(await confirmClear(runtime, ctx))) return { kind: "stay" };
-				if (
-					goalQueueIdentity(runtime.activeGoal, runtime.queuedGoals, runtime.pendingQueueAction) !==
-					previewedQueue
-				) {
-					notifyTerminal(
-						ctx.ui,
-						"The goal queue changed while the dialog was open. Reopen /goal and try again.",
-						"warning",
-					);
+				if (previewedGoal && !requireCurrentMenuGoal(runtime, previewedGoal, ctx)) {
 					return { kind: "stay" };
 				}
 				commands.clearGoal(ctx);
-				return { kind: "close" };
-			},
-			"queue-add": async () => {
-				const objective = (await ctx.ui.editor("Add goal to queue", ""))?.trim();
-				if (objective) await commands.addGoal(objective, undefined, ctx);
-				return { kind: "close" };
-			},
-			"queue-prioritize": async () => {
-				const goal = displayedQueueHead;
-				if (!goal) return { kind: "stay" };
-				const objective = (await ctx.ui.editor("Prioritize goal", ""))?.trim();
-				if (!objective || !requireCurrentQueueHead(runtime, goal, ctx)) return { kind: "stay" };
-				const confirmed = await ctx.ui.confirm(
-					"Prioritize goal?",
-					`New priority goal:\n${safeGoalMenuText(objective, 4_000)}\n\nCurrent goal moved to the queue:\n${safeGoalMenuText(goal.text, 4_000)}`,
-				);
-				if (confirmed && requireCurrentQueueHead(runtime, goal, ctx)) {
-					await commands.prioritizeGoal(objective, undefined, ctx);
-				}
-				return { kind: "close" };
-			},
-			"queue-skip": async () => {
-				const goal = displayedQueueHead;
-				if (!goal) return { kind: "stay" };
-				const next = displayedQueueFirst;
-				const nextEffect = !next
-					? "No goal remains"
-					: next.status === "queued"
-						? `Start next goal:\n${safeGoalMenuText(next.text, 4_000)}`
-						: `Next goal remains ${displayStatus(next.status).toLowerCase()}:\n${safeGoalMenuText(next.text, 4_000)}`;
-				const confirmed = await ctx.ui.confirm(
-					"Skip current goal?",
-					`Remove current goal:\n${safeGoalMenuText(goal.text, 4_000)}\n\n${nextEffect}`,
-				);
-				if (confirmed && requireCurrentQueueSelection(runtime, goal, next, "first", ctx)) {
-					await commands.skipGoal(ctx);
-				}
-				return { kind: "close" };
-			},
-			"queue-drop": async () => {
-				const goal = displayedQueueHead;
-				const last = displayedQueueLast;
-				if (!goal || !last) return { kind: "stay" };
-				const confirmed = await ctx.ui.confirm(
-					"Drop last goal?",
-					`Remove from queue:\n${safeGoalMenuText(last.text, 4_000)}`,
-				);
-				if (confirmed && requireCurrentQueueSelection(runtime, goal, last, "last", ctx)) {
-					commands.dropLastGoal(ctx);
-				}
 				return { kind: "close" };
 			},
 			back: async () => ({ kind: "back" }),
@@ -608,7 +461,6 @@ function goalMainMenuItem(label: string): ActionMenuItem<GoalMenuScreen, GoalMen
 	if (label === GOAL_MENU_ACTIONS.reviewSafety) {
 		return { id: "review-safety", label, to: "safety" as const };
 	}
-	if (label === GOAL_MENU_ACTIONS.queue) return { id: "queue", label, to: "queue" as const };
 	if (label === GOAL_MENU_ACTIONS.help) return { id: "help", label, to: "help" as const };
 	if (label === GOAL_MENU_ACTIONS.close) return { id: "close", label, close: true as const };
 	const actions = new Map<string, GoalMenuAction>([
@@ -625,7 +477,7 @@ function goalMainMenuItem(label: string): ActionMenuItem<GoalMenuScreen, GoalMen
 
 function refreshGoalMenuState(runtime: GoalMenuRuntimeView, ctx: ExtensionCommandContext) {
 	const goal = runtime.activeGoal;
-	if (!goal || runtime.queueFrozen) return;
+	if (!goal) return;
 	runtime.recordGoalUsage?.(goal, ctx);
 	runtime.persistGoal?.(goal);
 	runtime.updateStatus?.(ctx, goal);
@@ -638,19 +490,14 @@ async function startFromMenu(commands: GoalCommandController, ctx: ExtensionComm
 }
 
 async function startBudgetedGoal(
-	runtime: GoalMenuRuntimeView,
 	commands: GoalCommandController,
 	ctx: ExtensionCommandContext,
 	budget: number,
 	automaticLimit: number | null,
-	expectedQueueIdentity: string,
 	signal: AbortSignal,
 	isMenuCurrent: () => boolean,
 	cancelTransition: "stay" | "back",
 ) {
-	if (!requireCurrentStartBudgetQueue(runtime, expectedQueueIdentity, ctx)) {
-		return { kind: "rejected" as const };
-	}
 	const objective = (
 		await ctx.ui.editor(
 			`Goal objective · Token budget ${formatCompactTokenCount(budget)} · ${automaticLimit === null ? "Automatic Unlimited" : `Automatic limit ${automaticLimit}`}`,
@@ -659,9 +506,6 @@ async function startBudgetedGoal(
 	)?.trim();
 	if (signal.aborted || !isMenuCurrent()) return { kind: "close" as const };
 	if (!objective) return { kind: cancelTransition } as const;
-	if (!requireCurrentStartBudgetQueue(runtime, expectedQueueIdentity, ctx)) {
-		return { kind: "rejected" as const };
-	}
 	await commands.startGoal(
 		objective,
 		budget,
@@ -756,44 +600,12 @@ async function editFromMenu(
 }
 
 async function confirmClear(runtime: GoalMenuRuntimeView, ctx: ExtensionCommandContext) {
-	const goals = [runtime.activeGoal, ...runtime.queuedGoals].filter(
-		(goal): goal is ActiveGoal => goal !== undefined,
-	);
-	const pendingPriority =
-		runtime.pendingQueueAction?.kind === "prioritize"
-			? runtime.pendingQueueAction.objective
-			: undefined;
-	const summaries = [
-		...goals.map((goal) => safeGoalMenuText(goal.text, 4_000)),
-		...(pendingPriority ? [`Pending priority: ${safeGoalMenuText(pendingPriority, 4_000)}`] : []),
-	];
-	if (summaries.length === 0) return false;
+	const goal = runtime.activeGoal;
+	if (!goal) return false;
 	return ctx.ui.confirm(
-		summaries.length > 1 ? "Clear goal queue?" : "Clear goal?",
-		`Remove ${summaries.length === 1 ? "this goal" : `all ${summaries.length} goals`}:\n\n${summaries
-			.map((summary, index) => `${index + 1}. ${summary}`)
-			.join("\n")}\n\nThis cannot be undone.`,
+		"Clear goal?",
+		`Remove this goal:\n\n${safeGoalMenuText(goal.text, 4_000)}\n\nThis cannot be undone.`,
 	);
-}
-
-function currentGoalQueueIdentity(runtime: GoalMenuRuntimeView) {
-	return goalQueueIdentity(runtime.activeGoal, runtime.queuedGoals, runtime.pendingQueueAction);
-}
-
-function requireCurrentStartBudgetQueue(
-	runtime: GoalMenuRuntimeView,
-	expectedIdentity: string,
-	ctx: ExtensionCommandContext,
-) {
-	if (currentGoalQueueIdentity(runtime) === expectedIdentity) {
-		return true;
-	}
-	notifyTerminal(
-		ctx.ui,
-		"The goal queue changed while the token budget flow was open. Reopen /goal and try again.",
-		"warning",
-	);
-	return false;
 }
 
 function requireCurrentBudgetPreview(
@@ -816,45 +628,6 @@ function requireCurrentBudgetPreview(
 	notifyTerminal(
 		ctx.ui,
 		"The goal changed or its usage changed while the budget dialog was open. Reopen /goal and try again.",
-		"warning",
-	);
-	return false;
-}
-
-function requireCurrentQueueHead(
-	runtime: GoalMenuRuntimeView,
-	expectedGoal: ActiveGoal,
-	ctx: ExtensionCommandContext,
-) {
-	if (runtime.activeGoal?.id === expectedGoal.id) return true;
-	notifyTerminal(
-		ctx.ui,
-		"The goal queue changed while the dialog was open. Reopen /goal and try again.",
-		"warning",
-	);
-	return false;
-}
-
-function requireCurrentQueueSelection(
-	runtime: GoalMenuRuntimeView,
-	expectedGoal: ActiveGoal,
-	expectedQueuedGoal: ActiveGoal | undefined,
-	position: "first" | "last",
-	ctx: ExtensionCommandContext,
-) {
-	const currentQueuedGoal =
-		position === "first"
-			? runtime.queuedGoals[0]
-			: (runtime.queuedGoals.at(-1) ?? runtime.activeGoal);
-	if (
-		runtime.activeGoal?.id === expectedGoal.id &&
-		currentQueuedGoal?.id === expectedQueuedGoal?.id
-	) {
-		return true;
-	}
-	notifyTerminal(
-		ctx.ui,
-		"The goal queue changed while the dialog was open. Reopen /goal and try again.",
 		"warning",
 	);
 	return false;
@@ -902,7 +675,7 @@ function automaticPauseSummary(used: number, limit: number | null) {
 function goalHelp() {
 	return [
 		"Goal menu",
-		"Use the menu for guided status, edits, queue management, settings, and confirmations.",
+		"Use the menu for guided status, edits, settings, and confirmations.",
 		"Direct routes remain available for deterministic workflows:",
 		"/goal <objective>",
 		"/goal status | pause | resume | edit | clear",

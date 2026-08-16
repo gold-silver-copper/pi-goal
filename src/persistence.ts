@@ -35,31 +35,18 @@ export interface ActiveGoal {
 	waiting?: GoalWait;
 }
 
-export type PendingQueueAction =
-	| {
-			kind: "prioritize";
-			objective: string;
-			tokenBudget?: number;
-			displacedUsageFinalized?: boolean;
-	  }
-	| {
-			kind: "advance";
-			goalId: string;
-			reason: "complete" | "skip";
-			completedText: string;
-	  };
-
 export interface GoalStateEntryData {
 	goal: ActiveGoal | null;
-	queue?: ActiveGoal[];
-	pendingAction?: PendingQueueAction;
+}
+
+export interface LegacyQueueState {
+	reason: "canonical-queue" | "legacy-goals";
+	retainedGoals: number;
 }
 
 export interface LoadedGoalState {
 	goal: ActiveGoal | undefined;
-	queue: ActiveGoal[];
-	pendingAction: PendingQueueAction | undefined;
-	hasExperimentalQueueState: boolean;
+	legacyQueueState: LegacyQueueState | undefined;
 	source: "none" | "canonical" | "legacy-goals";
 }
 
@@ -76,16 +63,8 @@ interface SessionContext {
 	};
 }
 
-export function serializeGoalState(
-	goal: ActiveGoal | undefined,
-	queue: readonly ActiveGoal[],
-	pendingAction: PendingQueueAction | undefined,
-): GoalStateEntryData {
-	return {
-		goal: goal ?? null,
-		...(queue.length > 0 ? { queue: [...queue] } : {}),
-		...(pendingAction ? { pendingAction } : {}),
-	};
+export function serializeGoalState(goal: ActiveGoal | undefined): GoalStateEntryData {
+	return { goal: goal ?? null };
 }
 
 export function loadGoalStateFromSession(ctx: SessionContext): LoadedGoalState {
@@ -105,7 +84,7 @@ export function loadGoalStateFromSession(ctx: SessionContext): LoadedGoalState {
 
 export function loadGoalFromSession(ctx: SessionContext): ActiveGoal | undefined {
 	const loaded = loadGoalStateFromSession(ctx);
-	if (loaded.hasExperimentalQueueState || loaded.goal?.status === "complete") return undefined;
+	if (loaded.legacyQueueState || loaded.goal?.status === "complete") return undefined;
 	return loaded.goal;
 }
 
@@ -113,27 +92,51 @@ function loadCanonicalGoalState(data: unknown): LoadedGoalState {
 	if (!isRecord(data)) return emptyGoalState("canonical");
 	const rawGoal = data.goal;
 	if (rawGoal !== null && !isGoal(rawGoal)) return emptyGoalState("canonical");
-	const rawQueue = Object.hasOwn(data, "queue") ? data.queue : [];
-	if (!Array.isArray(rawQueue) || !rawQueue.every(isQueueGoal)) {
+	const rawQueue = Object.hasOwn(data, "queue") ? data.queue : undefined;
+	if (rawQueue !== undefined && (!Array.isArray(rawQueue) || !rawQueue.every(isQueueGoal))) {
 		return emptyGoalState("canonical");
 	}
-	const pendingAction = normalizePendingQueueAction(data.pendingAction);
-	if (Object.hasOwn(data, "pendingAction") && !pendingAction) {
-		return emptyGoalState("canonical");
+	const pendingAction = Object.hasOwn(data, "pendingAction")
+		? normalizeCanonicalPendingAction(data.pendingAction)
+		: undefined;
+	if (Object.hasOwn(data, "pendingAction") && !pendingAction) return emptyGoalState("canonical");
+	const hasQueueFields = rawQueue !== undefined || pendingAction !== undefined;
+	if (hasQueueFields || (isGoal(rawGoal) && rawGoal.status === "queued")) {
+		return legacyQueueState("canonical", {
+			reason: "canonical-queue",
+			retainedGoals: countCanonicalLegacyGoals(rawGoal, rawQueue, pendingAction),
+		});
 	}
 
-	const queue = rawQueue.map(normalizeQueuedGoal);
 	let goal = rawGoal === null ? undefined : normalizeLoadedGoal(rawGoal);
-	if (goal?.status === "complete" && !pendingAction) goal = undefined;
-	if (!goal && (queue.length > 0 || pendingAction)) return emptyGoalState("canonical");
-	return {
-		goal,
-		queue,
-		pendingAction,
-		hasExperimentalQueueState:
-			goal?.status === "queued" || queue.length > 0 || pendingAction !== undefined,
-		source: "canonical",
-	};
+	if (goal?.status === "complete") goal = undefined;
+	return { goal, legacyQueueState: undefined, source: "canonical" };
+}
+
+function countCanonicalLegacyGoals(
+	goal: unknown,
+	queue: ActiveGoal[] | undefined,
+	pendingAction: { kind: string } | undefined,
+) {
+	let count = isGoal(goal) && goal.status !== "complete" ? 1 : 0;
+	count += (queue ?? []).filter((queuedGoal) => queuedGoal.status !== "complete").length;
+	if (pendingAction?.kind === "prioritize") count += 1;
+	return count;
+}
+
+function normalizeCanonicalPendingAction(value: unknown): { kind: string } | undefined {
+	if (!isRecord(value)) return undefined;
+	if (value.kind === "prioritize" && validObjective(value.objective)) return { kind: "prioritize" };
+	if (
+		value.kind === "advance" &&
+		typeof value.goalId === "string" &&
+		value.goalId.trim() &&
+		(value.reason === "complete" || value.reason === "skip") &&
+		validObjective(value.completedText)
+	) {
+		return { kind: "advance" };
+	}
+	return undefined;
 }
 
 function loadLegacyGoalsState(data: unknown): LoadedGoalState {
@@ -147,76 +150,28 @@ function loadLegacyGoalsState(data: unknown): LoadedGoalState {
 	} else {
 		rawGoals = [];
 	}
-	const goals = rawGoals.map((goal, index) =>
-		index === 0 ? normalizeLoadedGoal(goal) : normalizeQueuedGoal(goal),
-	);
 	const pendingAction = normalizeLegacyPendingPrioritize(data.pendingUnshift);
-	if (goals.length === 0) return emptyGoalState("legacy-goals");
-	return {
-		goal: goals[0],
-		queue: goals.slice(1),
-		pendingAction,
-		hasExperimentalQueueState:
-			goals[0]?.status === "queued" || goals.length > 1 || pendingAction !== undefined,
-		source: "legacy-goals",
-	};
-}
-
-function normalizePendingQueueAction(value: unknown): PendingQueueAction | undefined {
-	if (!isRecord(value)) return undefined;
-	if (value.kind === "prioritize") {
-		if (
-			!validObjective(value.objective) ||
-			(Object.hasOwn(value, "displacedUsageFinalized") &&
-				typeof value.displacedUsageFinalized !== "boolean")
-		) {
-			return undefined;
-		}
+	if (rawGoals.length === 1 && rawGoals[0]?.status !== "queued" && pendingAction === undefined) {
 		return {
-			kind: "prioritize",
-			objective: value.objective,
-			tokenBudget: normalizeTokenBudget(value.tokenBudget),
-			...(value.displacedUsageFinalized === true ? { displacedUsageFinalized: true } : {}),
+			goal: normalizeLoadedGoal(rawGoals[0]),
+			legacyQueueState: undefined,
+			source: "legacy-goals",
 		};
 	}
-	if (value.kind === "advance") {
-		if (
-			typeof value.goalId !== "string" ||
-			!value.goalId ||
-			value.goalId !== value.goalId.trim() ||
-			(value.reason !== "complete" && value.reason !== "skip") ||
-			!validObjective(value.completedText)
-		) {
-			return undefined;
-		}
-		return {
-			kind: "advance",
-			goalId: value.goalId,
-			reason: value.reason,
-			completedText: value.completedText,
-		};
-	}
-	return undefined;
+	if (rawGoals.length === 0 && pendingAction === undefined) return emptyGoalState("legacy-goals");
+	return legacyQueueState("legacy-goals", {
+		reason: "legacy-goals",
+		retainedGoals: rawGoals.length + (pendingAction ? 1 : 0),
+	});
 }
 
-function normalizeLegacyPendingPrioritize(value: unknown): PendingQueueAction | undefined {
+function normalizeLegacyPendingPrioritize(value: unknown): { objective: string } | undefined {
 	if (!isRecord(value) || !validObjective(value.objective)) return undefined;
-	return {
-		kind: "prioritize",
-		objective: value.objective,
-		tokenBudget: normalizeTokenBudget(value.tokenBudget),
-	};
+	return { objective: value.objective };
 }
 
 function validObjective(value: unknown): value is string {
 	return typeof value === "string" && Boolean(value.trim()) && value.length <= 4_000;
-}
-
-function normalizeQueuedGoal(goal: ActiveGoal): ActiveGoal {
-	const normalized = normalizeLoadedGoal(goal);
-	return normalized.status === "active"
-		? { ...normalized, status: "queued", activeStartedAt: undefined }
-		: { ...normalized, activeStartedAt: undefined };
 }
 
 export function normalizeLoadedGoal(goal: ActiveGoal): ActiveGoal {
@@ -311,9 +266,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function emptyGoalState(source: LoadedGoalState["source"]): LoadedGoalState {
 	return {
 		goal: undefined,
-		queue: [],
-		pendingAction: undefined,
-		hasExperimentalQueueState: false,
+		legacyQueueState: undefined,
+		source,
+	};
+}
+
+function legacyQueueState(
+	source: LoadedGoalState["source"],
+	legacyQueue: LegacyQueueState,
+): LoadedGoalState {
+	return {
+		goal: undefined,
+		legacyQueueState: legacyQueue,
 		source,
 	};
 }

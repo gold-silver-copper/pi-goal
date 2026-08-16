@@ -2,35 +2,34 @@
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-goal)](https://www.npmjs.com/package/@narumitw/pi-goal) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-`@narumitw/pi-goal` is a native [Pi coding agent](https://pi.dev) extension that adds session-scoped `/goal` commands, a `goal_complete({ goal_id, summary })` completion tool, a strict `goal_blocked({ goal_id, reason, evidence, repeated_turns })` impasse tool, and a `goal_wait({ goal_id, reason, resume_after_ms? })` tool for external-event waits. An opt-in experimental mode adds an ordered queue without introducing a second command or tool namespace.
+`@narumitw/pi-goal` is a native [Pi coding agent](https://pi.dev) extension that adds session-scoped `/goal` commands, a `goal_complete({ goal_id, summary })` completion tool, a strict `goal_blocked({ goal_id, reason, evidence, repeated_turns })` impasse tool, and a `goal_wait({ goal_id, reason, resume_after_ms? })` tool for external-event waits.
 
-Goal mode uses Codex-like persistence instructions and sends guarded continuation messages from Pi's fully settled idle boundary until the agent completes the goal, explicitly waits for an external event, the user pauses or clears it, a safety circuit breaker trips, a true blocker or provider usage limit stops it, or an optional token budget is reached. With ordered goals enabled, the same lifecycle advances through queued objectives one at a time.
+Goal mode uses Codex-like persistence instructions and sends guarded continuation messages from Pi's fully settled idle boundary until the agent completes the goal, explicitly waits for an external event, the user pauses or clears it, a safety circuit breaker trips, a true blocker or provider usage limit stops it, or an optional token budget is reached.
 
 ## ✨ Features
 
 - Adds `/goal <goal_to_complete>` to start goal mode, with confirmation before replacing an existing goal.
 - Bare `/goal` opens a standard current-state manager in the TUI, with guided start, pause,
-  resume, edit, queue, settings, status, help, and destructive-action confirmation; RPC mode retains
+  resume, edit, settings, status, help, and destructive-action confirmation; RPC mode retains
   observable status notifications.
 - Keeps direct goal management available through `/goal` subcommands: `status`, `pause`, `resume`, `clear`, and `edit`.
-- Exposes only one top-level command: `/goal`, including when ordered goals are enabled.
-- Optionally adds ordered-goal operations through `/goal add`, `prioritize`, `drop-last`, and `skip`, while accepting `push`, `unshift`, `pop`, and `shift` as hidden compatibility aliases.
+- Exposes only one top-level command: `/goal`.
 - Pauses automatic work after 25 Goal-owned model responses by default, preserves progress, and provides a guided review-and-continue flow; custom finite limits and confirmed Unlimited mode remain available.
 - Pauses after three consecutive empty or normalized-identical tool-free automatic runs, while distinct short output and tool activity reset the repeat detector.
 - Supports optional token budgets such as `/goal --tokens 100k <goal>`, using provider-reported total-token accounting with a cache-inclusive compatibility fallback.
 - Tracks distinct `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`, and `complete` states.
-- Stores goal state in the current Pi session, following Codex's thread-owned goal model instead of using a global per-directory goal. Experimental queues keep independent budget, usage, elapsed-time, iteration, status, and stale-id accounting for every item.
+- Stores goal state in the current Pi session, following Codex's thread-owned goal model instead of using a global per-directory goal.
 - Registers a `goal_complete({ goal_id, summary })` tool for explicit completion, requiring the current goal id and rejecting missing/stale ids plus plainly contradictory summaries such as “not complete” or “tests still fail”.
 - Registers `goal_blocked({ goal_id, reason, evidence, repeated_turns })` for true impasses only; it requires the current goal id, concrete evidence, and the same blocker recurring for at least three consecutive goal turns.
-- Registers `goal_wait({ goal_id, reason, resume_after_ms? })` for an active Goal that has arranged an external wake message; waiting suppresses automatic continuation while preserving the objective, accounting, queue, and managed-run ownership.
+- Registers `goal_wait({ goal_id, reason, resume_after_ms? })` for an active Goal that has arranged an external wake message; waiting suppresses automatic continuation while preserving the objective, accounting, and managed-run ownership.
 - Starts all three Goal tools inactive by default, reveals them for the first accepted `/goal` activation or an unfinished-goal restore, and keeps them desired for the rest of that extension runtime without overriding a restrictive restore policy. Optional `"always"` visibility keeps them active from session startup.
-- Records continuation and queue-transition intent, then triggers exactly one next turn only after Pi reports the agent fully settled, idle, and free of pending messages; an explicit wait remains quiet until non-Goal work or its optional deadline wakes it, and missing terminal tools still pause before another model turn.
+- Records continuation intent, then triggers exactly one next turn only after Pi reports the agent fully settled, idle, and free of pending messages; an explicit wait remains quiet until non-Goal work or its optional deadline wakes it, and missing terminal tools still pause before another model turn.
 - Lets retry, compaction, steering, follow-up, and other queued work settle before automatic goal continuation.
 - Separates user interruption (`paused`), true impasse or terminal non-usage error (`blocked`), provider/account quota exhaustion (`usage_limited`), and user token budget exhaustion (`budget_limited`).
 - Detects budget exhaustion after completed tool activity when assistant usage is persisted, then injects at most one non-user-authored wrap-up instruction and blocks further substantive tools.
 - Keeps retryable provider interruptions and Pi compaction retries active without enqueueing duplicate goal continuations while Pi retries, then marks a matching unresolved error `blocked` only when `agent_settled` proves no retry, compaction, or follow-up remains.
 - Preserves active goals across manual, threshold, and overflow compaction.
-- Guards auto-follow-ups and Goal-owned kickoff deliveries so duplicate, replaced, stopped, cleared, completed, budget-limited, or stale queued prompts cannot continue or overwrite a newer goal.
+- Guards auto-follow-ups and Goal-owned kickoff deliveries so duplicate, replaced, stopped, cleared, completed, budget-limited, or stale prompts cannot continue or overwrite a newer goal.
 - Rotates the completion guard id when a goal is resumed or edited so delayed old turns cannot complete the newer goal instance.
 - Blocks stale tool calls after in-flight work pauses, blocks, or reaches a usage limit, until fresh non-goal user work, successful reactivation/replacement, or clear.
 - Applies one evidence-based completion audit across kickoff, resume, edit, system, continuation, and budget-wrap-up prompts.
@@ -64,9 +63,6 @@ built-in defaults without creating the file:
 ```json
 {
   "toolVisibility": "after-first-goal",
-  "experimental": {
-    "goals": false
-  },
   "rpc": {
     "enabled": false
   },
@@ -78,13 +74,12 @@ built-in defaults without creating the file:
 ```
 
 Use `/goal` → **Settings…** in the TUI to create or update the file interactively, or create
-and edit it directly. The standard Settings screen keeps all five controls on one level in task
+and edit it directly. The standard Settings screen keeps all four controls on one level in task
 order; the two safety limits open standard choice screens:
 
 - **Automatic-work limit** shows the exact response limit or **Unlimited**. Choose **Set response limit…** to edit the current finite value (or the built-in default of 25 when switching from Unlimited), or choose **Unlimited…**. Unlimited requires confirmation that tool loops may continue consuming tokens and provider cost without a response-count cap.
 - **No-progress guard** shows **_N_ runs** or **Off**. Choose the default threshold, **Off**, or **Set threshold…** and enter a safe whole number greater than zero.
 - **Goal tools** controls whether all Goal tools are always visible or appear after the first goal.
-- **Ordered goal queue** controls the experimental ordered-goal workflows.
 - **Managed run RPC** controls whether trusted installed extensions may start and cancel managed Goal runs. It defaults to **Off** and is a cooperation setting, not an extension security sandbox.
 
 Custom number inputs reject zero, negative numbers, decimals, text, and unsafe integers without saving; use the explicit **Unlimited** or **Off** choice instead. Interactive changes are serialized, written atomically, preserve unknown fields, and apply to the current runtime. A successful change updates the visible state immediately. A failed save restores the prior value and reports the settings path so it can be retried. Tool-visibility changes that would alter the active tool schema are rejected while Pi is busy; retry after Pi settles. Escape returns to the previous screen without reverting changes that were already saved.
@@ -94,7 +89,7 @@ Custom number inputs reject zero, negative numbers, decimals, text, and unsafe i
 - `"always"` — pi-goal does not proactively hide `goal_complete`, `goal_blocked`, or `goal_wait`, keeping the Goal tool schema stable from session startup.
 - `"after-first-goal"` (default) — hides all three Goal tools at fresh runtime startup, reveals them for the first accepted Goal activation, and treats an unfinished-goal restore as unlocked for the remainder of that extension runtime. On restore, pi-goal uses the active tools already established by earlier lifecycle handlers; it does not re-add missing terminal tools over a restrictive policy. Failed kickoff, replacement, resume, or reactivating-edit delivery restores the exact pre-activation tool set, including Goal tools exposed by another extension. If revealing the tools would widen an already-running turn, wait for Pi to become idle and retry `/goal`.
 
-`experimental.goals` accepts a boolean and defaults to `false`. Set it to `true` to enable the ordered-goal subcommands and automatic queue advancement described below. Enabled sessions show one warning because command behavior and persisted queue state remain experimental.
+`experimental.goals` is a removed legacy setting. If it remains `true`, pi-goal accepts the settings file, ignores the old queue feature, and shows an affected-user warning that recommends `/goal edit` for reprioritizing one objective. Later settings saves preserve unknown legacy fields instead of deleting them.
 
 `rpc.enabled` accepts a boolean and defaults to `false`. When disabled, a valid managed-run start receives `RPC_DISABLED`; manual and restored Goals remain unchanged. A Settings-menu change applies immediately after its atomic save. Disabling rejects new starts but lets an already accepted run continue publishing its exact state and accept its exact cancellation until terminal, avoiding stranded work. Reload, replacement, and shutdown clear that in-memory ownership.
 
@@ -122,12 +117,6 @@ Tool visibility is a baseline, not ownership of Pi's global active-tool list. Pl
 /goal pause
 /goal resume
 /goal clear
-
-# With experimental.goals enabled:
-/goal add --tokens 20k run the integration tests
-/goal prioritize fix the urgent production regression
-/goal drop-last
-/goal skip
 ```
 
 - In the TUI, `/goal` opens a standard state-aware manager. Its first action follows the current
@@ -135,33 +124,29 @@ Tool visibility is a baseline, not ownership of Pi's global active-tool list. Pl
   stopped states, or increase an exhausted token budget. Active and paused views show **Automatic
   work: _used_ of _limit_ responses** with the remaining count, or explicitly show **Unlimited**.
   A hard-cap pause opens **Review and continue…**, which states that objective, cumulative usage,
-  active time, and queue are preserved and previews that Continue resets the counter to zero and
+  and active time are preserved and previews that Continue resets the counter to zero and
   allows up to one more configured epoch. **Change automatic-work limit…** opens that setting while
   leaving the goal paused; Back and Escape make no change. **Start with token budget…** first offers
   `25k`, a suggested `100k`, `300k`, and **Set a custom budget…**, then collects the objective with
   the selected budget still visible. Custom input accepts examples such as `300000`, `300k`, `2.5k`,
-  and `1.5m`; invalid input retains its draft for correction. Status, Settings, Help, queue
-  management, invalid-settings guidance, Clear, and Close remain shallow, labeled routes. Arrow keys
+  and `1.5m`; invalid input retains its draft for correction. Status, Settings, Help,
+  invalid-settings guidance, Clear, and Close remain shallow, labeled routes. Arrow keys
   navigate, Enter selects or submits, Escape goes Back, and Ctrl+C closes the full flow.
 - In RPC mode, bare `/goal` and `/goal status` report the current summary through an observable notification without opening terminal UI. Pi exposes no extension-command output channel in print or JSON mode, so those routes reject with an explicit unsupported-mode error instead of misreporting stderr as status output.
-- Menu-driven Replace, Clear, Prioritize, Skip, and Drop last actions preview the exact affected goals and require confirmation. Existing direct routes remain immediate for compatibility and automation.
+- Menu-driven Replace and Clear actions preview the exact affected goal and require confirmation. Existing direct routes remain immediate for compatibility and automation.
 - `/goal <goal_to_complete>` starts goal mode. If another unfinished goal exists, Pi asks for confirmation before replacing it with a new active goal and resetting its usage counters. Failed kickoff delivery clears a new goal or restores the prior goal; a previously active goal is restored as paused.
 - `/goal --tokens 100k <goal_to_complete>` starts or replaces goal mode with a token budget. `k` and `m` suffixes are accepted, for example `100k` or `1.5m`.
 - `/goal edit <goal_to_complete>` updates the existing goal objective without resetting usage counters. A successful active edit rotates the stale-turn guard and starts a fresh safety epoch. Paused, blocked, and usage-limited goals stay stopped and retain their safety state until resume. A budget-limited goal reactivates only when `edit --tokens` raises its budget above current usage. Failed prompt delivery restores the exact previous safety counters/cause; it restores a budget-limited goal or restores and pauses a previously active goal.
 - `/goal pause` stops prompt injection and auto-continuation, aborts the current turn, and keeps the goal for later resume. Only active goals can be paused.
-- `/goal resume` resumes a paused, blocked, usage-limited, or budget-limited goal when its token budget allows it, rotates the stale-turn guard id, resets the automatic-response/repeat safety epoch when the queued resume prompt starts, clears a safety-pause cause, and reports the new finite epoch or explicit Unlimited state. Objective, cumulative usage, elapsed time, and queue are preserved. If prompt delivery fails, the original stopped state, guard id, counters, fingerprint, and cause are restored.
-- `/goal clear` clears the current goal or the entire ordered queue, status, pending continuation/transition, and legacy persisted state for the current working directory without aborting unrelated in-flight work.
+- `/goal resume` resumes a paused, blocked, usage-limited, or budget-limited goal when its token budget allows it, rotates the stale-turn guard id, resets the automatic-response/repeat safety epoch when the queued resume prompt starts, clears a safety-pause cause, and reports the new finite epoch or explicit Unlimited state. Objective, cumulative usage, and elapsed time are preserved. If prompt delivery fails, the original stopped state, guard id, counters, fingerprint, and cause are restored.
+- `/goal clear` clears the current goal, status, pending continuation, inert legacy queue state, and legacy persisted state for the current working directory without aborting unrelated in-flight work.
 
-With `experimental.goals: true`:
+The experimental ordered-goal queue has been removed.
+Use `/goal edit <objective>` to reprioritize the active objective instead.
+For example, if `task b` is complete and `task c` is in progress, edit the objective to say: `task b is complete; do task a next; after task a, continue task c, then task d; do not redo task b unless verification shows it is incomplete.`
 
-- `/goal add [--tokens <budget>] <goal>` appends an objective without interrupting the active head. If no goal exists, it starts immediately.
-- `/goal prioritize [--tokens <budget>] <goal>` inserts an urgent objective at the front. When Pi is busy, the intent is persisted and activation waits until the old run, retries, and pending messages settle, so old usage cannot be charged to the urgent goal.
-- `/goal drop-last` removes the tail. If only the active head remains, it clears that goal.
-- `/goal skip` removes the active head and starts the next eligible item only from an idle settled boundary. A stopped next item remains stopped.
-- `push`, `unshift`, `pop`, and `shift` are accepted as aliases for `add`, `prioritize`, `drop-last`, and `skip`, respectively. Autocomplete shows only the intent-oriented names.
-- `/goal <goal>` still starts or replaces the whole queue; `edit`, `pause`, and `resume` operate on the active head.
-
-When the experiment is disabled, queue words retain the original parser behavior and are ordinary objective text. For example, `/goal add docs` starts the single objective `add docs`.
+Former queue command words such as `add`, `prioritize`, `drop-last`, `skip`, `push`, `unshift`, `pop`, and `shift` are ordinary objective text for unaffected users.
+If a session still has legacy queue settings or persisted queue state, those words show a migration warning instead of replacing the active Goal.
 
 Goal objectives are limited to 4,000 characters. Put longer instructions in a file and reference the file path from `/goal`.
 
@@ -169,9 +154,9 @@ Goal objectives are limited to 4,000 characters. Put longer instructions in a fi
 
 Goal state is stored as Pi session state, similar to Codex's thread-owned goals. `/reload` and reopening the same Pi session can restore that session's unfinished goal. An active restored goal already at or above its finite automatic-work limit pauses before another provider request and reports that progress is saved; use `/goal` to review and continue. A restored waiting Goal remains quiet, excludes offline and waiting wall time from active elapsed time, and restores only its absolute optional deadline timer. With `"after-first-goal"`, an unfinished restore marks the tools unlocked in the new extension runtime, but it does not widen an active-tool set already restricted by an earlier lifecycle handler; an active goal instead restores as paused when either terminal tool is missing. If no unfinished goal remains, a fresh runtime starts locked again. Active elapsed time is checkpointed before shutdown and restarted after reload only when the Goal is not waiting, so offline and stopped wall-clock time is excluded. Automatic-response counts, repeat fingerprints, and safety-pause causes persist across reload and compaction. A direct non-`/goal` user/RPC input resets the safety epoch only while the goal is active and reclassifies the in-flight run as manual; extension input and messages sent while stopped do not reset it. Starting a new Pi session in the same working directory does not inherit the old goal.
 
-Ordered queues use the same canonical `goal-state` session entry as single goals. Every item owns independent usage and safety state. Shelving, priority displacement, automatic advancement, and later reactivation preserve that item's epoch rather than granting more automatic work. The legacy `{ goal }` shape remains valid, and missing safety fields normalize to zero/defaults. Queue fields are written only when needed. Sessions created by the former standalone `pi-goals` experiment can migrate their last `goals-state` array and pending `unshift` intent when the branch has never written a canonical `goal-state`; any canonical entry, including an explicit clear, takes precedence so old plural state cannot be resurrected.
+The legacy `{ goal }` shape remains valid, and missing safety fields normalize to zero/defaults. Sessions created by the former standalone `pi-goals` experiment can still restore exactly one ordinary unfinished goal when no canonical `goal-state` entry exists.
 
-If a session still contains multiple goals or a pending queue transition when `experimental.goals` is disabled, pi-goal freezes that queue. It does not inject Goal prompts or continue work, reports `queue off`, preserves every item, and accepts only `/goal` for inspection or `/goal clear` for removal. Re-enabling the setting in the TUI resumes retained work after any aborted Goal-owned run settles; editing the file directly still requires `/reload`. A migrated legacy array containing only one goal becomes an ordinary single goal without requiring the experiment.
+If a session still contains old queue metadata, multiple legacy goals, a queued head, or a pending queue transition, pi-goal treats that state as inert legacy data. It does not inject Goal prompts, advance the queue, or run any retained item automatically. Affected users receive a warning that recommends starting or editing one merged objective with `/goal edit`, or using `/goal clear` to discard the old queue state.
 
 Older versions wrote unfinished goals to `~/.pi/agent/pi-goal-state.json` keyed by working directory. This version no longer reads that global file, and `/goal clear` removes any legacy entry for the current working directory.
 
@@ -189,7 +174,6 @@ Older versions wrote unfinished goals to `~/.pi/agent/pi-goal-state.json` keyed 
 - `usage · automatic 12/25` — the provider or account usage limit stopped work.
 - `budget 100k/100k · automatic 12/25` — the user-configured token budget was reached; auto-continuation stops.
 - `complete` — shown briefly after `goal_complete` succeeds.
-- `queue off` — retained ordered goals are frozen because `experimental.goals` is disabled.
 
 ## 💰 Token budgets and elapsed time
 
@@ -239,11 +223,11 @@ An accepted call keeps the canonical Goal status active, checkpoints active elap
 
 Interactive input, RPC input, another extension's `sendUserMessage()` input, and supported non-Goal custom follow-ups clear the wait before their turn runs. pi-goal-owned kickoff, resume, edit, continuation, stale, or cancelled prompts do not count as external wake-ups. Pi does not expose the sending extension's identity, so any non-Goal extension message is treated as a wake signal.
 
-After a waking turn ends, ordinary continuation rules apply again. The agent can complete or block the Goal, continue working, or call `goal_wait` again after arranging the next wake source. `/goal resume` also clears waiting and sends one manual resume prompt without resetting cumulative usage or the safety epoch. `/goal pause`, clear, edit, replace, completion, blocking, terminal limits, tool loss, queue displacement, session replacement, and shutdown cancel the in-memory deadline owner.
+After a waking turn ends, ordinary continuation rules apply again. The agent can complete or block the Goal, continue working, or call `goal_wait` again after arranging the next wake source. `/goal resume` also clears waiting and sends one manual resume prompt without resetting cumulative usage or the safety epoch. `/goal pause`, clear, edit, replace, completion, blocking, terminal limits, tool loss, session replacement, and shutdown cancel the in-memory deadline owner.
 
 A future deadline is restored from its absolute timestamp after reload. Reload never restarts, extends, or newly clamps an already-persisted absolute deadline, including a short deadline written by an older version. An already-due deadline waits for Pi's settled, idle, no-pending-message boundary and then requests exactly one continuation through the normal dispatcher. If that delivery throws, pi-goal restores the wait, retries once after one second, and leaves the Goal visibly waiting after a second failure instead of retry-looping. A deadline never sends a prompt directly from a stale timer.
 
-Waiting time is excluded from **Active elapsed**, while tokens, iteration, automatic-response count, no-progress state, queue data, and managed-run ownership remain preserved. The managed-run protocol continues reporting `active` because waiting is non-terminal. When an experimental priority Goal displaces a waiting head, the shelved Goal loses its wait so later reactivation performs a fresh external-state check.
+Waiting time is excluded from **Active elapsed**, while tokens, iteration, automatic-response count, no-progress state, managed-run ownership remain preserved. The managed-run protocol continues reporting `active` because waiting is non-terminal. Editing or replacing a waiting Goal clears the previous wait so the updated objective performs a fresh external-state check.
 
 ## 🚧 Blocked goals
 
@@ -253,7 +237,7 @@ Do not use `goal_blocked` merely because work is difficult, incomplete, uncertai
 
 ## 🛑 Interruption and queued-input behavior
 
-A user pause or aborted turn produces `paused`; a terminal provider/account quota error produces `usage_limited`; another non-retryable agent error produces `blocked`. Each stopped transition cancels pending continuation intent or delivery, aborts stale work when applicable, and blocks stale tool calls until the next non-goal user prompt, successful reactivation/replacement, or `/goal clear`. On `/goal clear`, the extension clears goal state, continuation markers, and any stale tool-call block without aborting an unrelated in-flight turn. Retryable provider interruptions and overflow compaction retries stay `active` while Pi retries; no extra continuation is queued, and automatic ownership remains charged through retry `agent_start` events. If matching recovery still exists at `agent_settled`, retries are exhausted and the goal becomes `blocked` before any pending queue transition dispatches. Stale recovery cannot block a replacement goal. User and extension work that starts before settlement supersedes the older continuation intent, and pending messages always take priority.
+A user pause or aborted turn produces `paused`; a terminal provider/account quota error produces `usage_limited`; another non-retryable agent error produces `blocked`. Each stopped transition cancels pending continuation intent or delivery, aborts stale work when applicable, and blocks stale tool calls until the next non-goal user prompt, successful reactivation/replacement, or `/goal clear`. On `/goal clear`, the extension clears goal state, continuation markers, and any stale tool-call block without aborting an unrelated in-flight turn. Retryable provider interruptions and overflow compaction retries stay `active` while Pi retries; no extra continuation is queued, and automatic ownership remains charged through retry `agent_start` events. If matching recovery still exists at `agent_settled`, retries are exhausted and the goal becomes `blocked` before any continuation dispatches. Stale recovery cannot block a replacement goal. User and extension work that starts before settlement supersedes the older continuation intent, and pending messages always take priority.
 
 ## 🤝 Managed run RPC
 
@@ -292,7 +276,7 @@ A successful start produces canonical state on `pi-goal:event:${runId}`:
 
 Subsequent state events use `active`, `complete`, `blocked`, `paused`, `usage_limited`, `budget_limited`, or `cleared`. `complete` is the only successful terminal outcome. A matching completion may include `summary`; other terminal outcomes may include `reason`. Events come only from canonical Goal persistence and only for the matching managed run. Manual and restored Goals are not adopted or broadcast, unchanged persistence does not duplicate a status, and each run emits at most one terminal event.
 
-Terminal events are dispatched after the underlying Goal transition settles, so a listener can start the next managed run directly after `complete` without re-entering completion cleanup. Other terminal statuses leave a stopped Goal that must be resolved or cleared first. If a manual edit, replacement, skip, or priority transition rotates the Goal id, the prior managed run ends as `cleared` with a superseded reason; the replacement remains outside that run.
+Terminal events are dispatched after the underlying Goal transition settles, so a listener can start the next managed run directly after `complete` without re-entering completion cleanup. Other terminal statuses leave a stopped Goal that must be resolved or cleared first. If a manual edit, replacement, or edit transition rotates the Goal id, the prior managed run ends as `cleared` with a superseded reason; the replacement remains outside that run.
 
 To cancel before or after activation, emit the same `runId`:
 
@@ -341,7 +325,7 @@ packages/pi-goal/
 │   ├── index.ts      # Pi package entrypoint
 │   ├── goal.ts       # Order-explicit extension composition root
 │   ├── command-registration.ts # Lightweight slash-command adapter with lazy manager/settings UI
-│   ├── commands.ts   # Per-factory user-command and queue mutation controller
+│   ├── commands.ts   # Per-factory user-command controller
 │   ├── tools.ts      # Goal completion and blocker tool adapters
 │   ├── lifecycle.ts  # Pi session, agent, tool, and compaction event adapter
 │   ├── runtime.ts    # Per-factory Goal state, transitions, prompts, and budgets
@@ -351,7 +335,6 @@ packages/pi-goal/
 │   ├── errors.ts     # Pi-aligned provider error and retry classification
 │   ├── markers.ts    # Bounded Goal prompt marker parsing and formatting
 │   ├── run-protocol.ts # Default-off managed-run protocol and session ownership
-│   ├── queue.ts      # Pure ordered-goal transitions
 │   └── *.ts          # Package-local parsing, settings, prompts, accounting, and persistence
 ├── README.md
 ├── LICENSE

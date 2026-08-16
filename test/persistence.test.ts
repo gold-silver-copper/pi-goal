@@ -22,12 +22,22 @@ function branch(...entries: Array<{ customType: string; data: unknown }>) {
 	};
 }
 
-test("canonical persistence keeps the legacy single-goal shape when queue metadata is empty", () => {
-	assert.deepEqual(serializeGoalState(active, [], undefined), { goal: active });
-	assert.deepEqual(serializeGoalState(undefined, [], undefined), { goal: null });
+test("canonical persistence keeps the single-goal shape", () => {
+	assert.deepEqual(serializeGoalState(active), { goal: active });
+	assert.deepEqual(serializeGoalState(undefined), { goal: null });
 });
 
-test("canonical persistence restores queue and pending prioritize safely", () => {
+test("canonical persistence restores ordinary single goals", () => {
+	const loaded = loadGoalStateFromSession(
+		branch({ customType: "goal-state", data: serializeGoalState(active) }),
+	);
+
+	assert.equal(loaded.source, "canonical");
+	assert.equal(loaded.goal?.text, "active");
+	assert.equal(loaded.legacyQueueState, undefined);
+});
+
+test("canonical queue metadata is inert legacy state", () => {
 	const pendingAction = {
 		kind: "prioritize" as const,
 		objective: "urgent",
@@ -37,54 +47,28 @@ test("canonical persistence restores queue and pending prioritize safely", () =>
 	const loaded = loadGoalStateFromSession(
 		branch({
 			customType: "goal-state",
-			data: serializeGoalState(active, [queued], pendingAction),
+			data: { goal: active, queue: [queued], pendingAction },
 		}),
 	);
 
 	assert.equal(loaded.source, "canonical");
-	assert.equal(loaded.goal?.text, "active");
-	assert.deepEqual(
-		loaded.queue.map(({ text, status }) => ({ text, status })),
-		[{ text: "queued", status: "queued" }],
-	);
-	assert.deepEqual(loaded.pendingAction, pendingAction);
-	assert.equal(loaded.hasExperimentalQueueState, true);
+	assert.equal(loaded.goal, undefined);
+	assert.deepEqual(loaded.legacyQueueState, {
+		reason: "canonical-queue",
+		retainedGoals: 3,
+	});
 });
 
-test("a queued head is experimental state even without a queued tail", () => {
-	for (const [customType, data] of [
-		["goal-state", { goal: queued }],
-		["goals-state", { goals: [queued] }],
-	] as const) {
-		const loaded = loadGoalStateFromSession(branch({ customType, data }));
-		assert.equal(loaded.goal?.status, "queued");
-		assert.deepEqual(loaded.queue, []);
-		assert.equal(loaded.hasExperimentalQueueState, true);
-	}
-});
-
-test("canonical state retains a completed head until pending priority can settle", () => {
-	const completed = { ...active, status: "complete" as const };
-	const pendingAction = {
-		kind: "prioritize" as const,
-		objective: "urgent after completion",
-		tokenBudget: 2_000,
-	};
+test("queued canonical heads are inert legacy queue state", () => {
 	const loaded = loadGoalStateFromSession(
-		branch({
-			customType: "goal-state",
-			data: serializeGoalState(completed, [queued], pendingAction),
-		}),
+		branch({ customType: "goal-state", data: { goal: queued } }),
 	);
 
-	assert.equal(loaded.goal?.status, "complete");
-	assert.equal(loaded.goal?.text, "active");
-	assert.deepEqual(
-		loaded.queue.map(({ text }) => text),
-		["queued"],
-	);
-	assert.deepEqual(loaded.pendingAction, pendingAction);
-	assert.equal(loaded.hasExperimentalQueueState, true);
+	assert.equal(loaded.goal, undefined);
+	assert.deepEqual(loaded.legacyQueueState, {
+		reason: "canonical-queue",
+		retainedGoals: 1,
+	});
 });
 
 test("canonical entries take precedence over older plural state, including explicit clear", () => {
@@ -98,10 +82,10 @@ test("canonical entries take precedence over older plural state, including expli
 
 	assert.equal(loaded.source, "canonical");
 	assert.equal(loaded.goal, undefined);
-	assert.deepEqual(loaded.queue, []);
+	assert.equal(loaded.legacyQueueState, undefined);
 });
 
-test("legacy plural state migrates only without canonical history", () => {
+test("legacy plural state is inert unless it contains exactly one ordinary goal", () => {
 	const pendingUnshift = { objective: "urgent", tokenBudget: 3_000 };
 	const loaded = loadGoalStateFromSession(
 		branch({
@@ -111,13 +95,11 @@ test("legacy plural state migrates only without canonical history", () => {
 	);
 
 	assert.equal(loaded.source, "legacy-goals");
-	assert.equal(loaded.goal?.text, "active");
-	assert.deepEqual(
-		loaded.queue.map(({ text }) => text),
-		["queued"],
-	);
-	assert.deepEqual(loaded.pendingAction, { kind: "prioritize", ...pendingUnshift });
-	assert.equal(loaded.hasExperimentalQueueState, true);
+	assert.equal(loaded.goal, undefined);
+	assert.deepEqual(loaded.legacyQueueState, {
+		reason: "legacy-goals",
+		retainedGoals: 3,
+	});
 });
 
 test("a legacy single goal becomes ordinary singular state", () => {
@@ -138,45 +120,7 @@ test("a legacy single goal becomes ordinary singular state", () => {
 	assert.equal(loaded.goal?.toolFreeRepeatCount, 0);
 	assert.equal(loaded.goal?.lastToolFreeOutputFingerprint, undefined);
 	assert.equal(loaded.goal?.safetyPauseCause, undefined);
-	assert.deepEqual(loaded.queue, []);
-	assert.equal(loaded.pendingAction, undefined);
-	assert.equal(loaded.hasExperimentalQueueState, false);
-});
-
-test("canonical persistence normalizes bounded safety state independently per queued goal", () => {
-	const fingerprint = "a".repeat(64);
-	const loaded = loadGoalStateFromSession(
-		branch({
-			customType: "goal-state",
-			data: {
-				goal: {
-					...active,
-					status: "paused",
-					automaticModelTurns: 12,
-					toolFreeRepeatCount: 2,
-					lastToolFreeOutputFingerprint: fingerprint,
-					safetyPauseCause: "no_progress",
-				},
-				queue: [
-					{
-						...queued,
-						automaticModelTurns: 7,
-						toolFreeRepeatCount: 1,
-						lastToolFreeOutputFingerprint: "b".repeat(64),
-					},
-				],
-			},
-		}),
-	);
-
-	assert.equal(loaded.goal?.automaticModelTurns, 12);
-	assert.equal(loaded.goal?.toolFreeRepeatCount, 2);
-	assert.equal(loaded.goal?.lastToolFreeOutputFingerprint, fingerprint);
-	assert.equal(loaded.goal?.safetyPauseCause, "no_progress");
-	assert.equal(loaded.queue[0]?.automaticModelTurns, 7);
-	assert.equal(loaded.queue[0]?.toolFreeRepeatCount, 1);
-	assert.equal(loaded.queue[0]?.lastToolFreeOutputFingerprint, "b".repeat(64));
-	assert.equal(loaded.queue[0]?.safetyPauseCause, undefined);
+	assert.equal(loaded.legacyQueueState, undefined);
 });
 
 test("a pending active reactivation retains its safety cause until prompt start", () => {
@@ -241,7 +185,7 @@ test("canonical persistence restores valid waiting and excludes waiting wall tim
 	assert.equal(loaded.goal?.activeStartedAt, undefined);
 });
 
-test("malformed or non-active waiting metadata is dropped without discarding the goal", () => {
+test("malformed waiting metadata is dropped without discarding the goal", () => {
 	for (const waiting of [
 		null,
 		{},
@@ -260,54 +204,18 @@ test("malformed or non-active waiting metadata is dropped without discarding the
 		assert.equal(loaded.goal?.text, "active");
 		assert.equal(loaded.goal?.waiting, undefined);
 	}
-
-	const queuedWithWait = loadGoalStateFromSession(
-		branch({
-			customType: "goal-state",
-			data: { goal: { ...queued, waiting: { reason: "stale queue wait" } } },
-		}),
-	);
-	assert.equal(queuedWithWait.goal?.status, "queued");
-	assert.equal(queuedWithWait.goal?.waiting, undefined);
 });
 
-test("malformed canonical or plural queue state fails closed", () => {
+test("malformed canonical or plural state fails closed", () => {
 	for (const [customType, data] of [
 		["goal-state", { goal: { ...active, id: "" } }],
 		["goal-state", { goal: { ...active, text: "   " } }],
 		["goal-state", { goal: active, queue: [{ nope: true }] }],
-		[
-			"goal-state",
-			{
-				goal: active,
-				pendingAction: { kind: "advance", goalId: " ", reason: "skip", completedText: "active" },
-			},
-		],
-		[
-			"goal-state",
-			{
-				goal: active,
-				pendingAction: { kind: "advance", goalId: active.id, reason: "skip", completedText: "" },
-			},
-		],
-		[
-			"goal-state",
-			{
-				goal: active,
-				pendingAction: {
-					kind: "prioritize",
-					objective: "urgent",
-					displacedUsageFinalized: "yes",
-				},
-			},
-		],
-		["goal-state", { goal: active, queue: [storedGoal("done", "complete")] }],
 		["goals-state", { goals: [active, { nope: true }] }],
 	] as const) {
 		const loaded = loadGoalStateFromSession(branch({ customType, data }));
 		assert.equal(loaded.goal, undefined);
-		assert.deepEqual(loaded.queue, []);
-		assert.equal(loaded.pendingAction, undefined);
+		assert.equal(loaded.legacyQueueState, undefined);
 	}
 });
 
@@ -364,6 +272,5 @@ function storedGoal(text: string, status: ActiveGoal["status"]): ActiveGoal {
 		baselineTokens: 0,
 		automaticModelTurns: 0,
 		toolFreeRepeatCount: 0,
-		...(status === "active" ? { activeStartedAt: 1 } : {}),
 	};
 }
