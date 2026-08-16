@@ -8,6 +8,7 @@ import {
 	lastGoalStatus,
 	pickSafetyState,
 	registerGoal,
+	registerGoalWithSettingsPath,
 	requireLastGoal,
 	restoreGoalForTest,
 	restoreStoredGoalForTest,
@@ -74,6 +75,46 @@ test("legacy persisted queue state is inert and shows migration guidance", () =>
 	assert.equal(mock.entries.at(-1)?.customType, "goal-state");
 	assert.deepEqual(mock.entries.at(-1)?.data, { goal: null });
 	assert.match(context.notifications.at(-1)?.message ?? "", /legacy ordered goal queue state/i);
+});
+
+test("legacy setting plus persisted queue state emits one usable warning", () => {
+	const legacySettingsPath = settingsPath("legacy-setting-with-persisted-queue.json");
+	writeFileSync(legacySettingsPath, '{"experimental":{"goals":true}}\n');
+	const mock = createMockPi();
+	registerGoalWithSettingsPath(mock.pi, legacySettingsPath);
+	const legacyGoal = {
+		id: "legacy-head",
+		text: "legacy head",
+		status: "active",
+		startedAt: 1,
+		updatedAt: 1,
+		iteration: 0,
+		tokensUsed: 0,
+		timeUsedSeconds: 0,
+		baselineTokens: 0,
+		automaticModelTurns: 0,
+		toolFreeRepeatCount: 0,
+	};
+	const context = createMockContext({
+		sessionManager: {
+			getBranch: () => [
+				{
+					type: "custom",
+					customType: "goal-state",
+					data: { goal: legacyGoal, queue: [{ ...legacyGoal, id: "legacy-tail" }] },
+				},
+			],
+		},
+	});
+
+	mock.events.get("session_start")?.[0]?.({}, context.ctx);
+
+	const queueWarnings = context.notifications.filter((notification) =>
+		/ordered goal queue has been removed/i.test(notification.message),
+	);
+	assert.equal(queueWarnings.length, 1);
+	assert.match(queueWarnings[0]?.message ?? "", /\/goal <merged objective>/i);
+	assert.doesNotMatch(queueWarnings[0]?.message ?? "", /\/goal edit/i);
 });
 
 test("failed start from inert legacy queue state preserves the old queue", async () => {

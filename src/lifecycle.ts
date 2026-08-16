@@ -66,9 +66,6 @@ export function registerGoalLifecycle(
 		}
 		runtime.legacyExperimentalGoalsSetting =
 			settingsResult.kind !== "invalid" && settingsResult.legacyExperimentalGoals;
-		if (runtime.legacyExperimentalGoalsSetting) {
-			notifyTerminal(ctx.ui, REMOVED_QUEUE_SETTING_WARNING, "warning");
-		}
 		try {
 			runtime.toolPolicy.prepareSessionStart(
 				runtime.settings.toolVisibility,
@@ -91,6 +88,9 @@ export function registerGoalLifecycle(
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			notifyTerminal(ctx.ui, REMOVED_PERSISTED_QUEUE_WARNING, "warning");
 			return;
+		}
+		if (runtime.legacyExperimentalGoalsSetting) {
+			notifyTerminal(ctx.ui, REMOVED_QUEUE_SETTING_WARNING, "warning");
 		}
 
 		if (runtime.activeGoal) {
