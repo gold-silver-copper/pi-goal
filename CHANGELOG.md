@@ -1,5 +1,16 @@
 # @narumitw/pi-goal
 
+## 0.52.0
+
+### Minor Changes
+
+- 5269d4b: Remove the experimental ordered-goal queue and guide affected users to reprioritize with `/goal edit`.
+
+### Patch Changes
+
+- Updated dependencies [3176172]
+  - @narumitw/pi-tui-kit@0.55.0
+
 ## 0.51.0
 
 ### Minor Changes
