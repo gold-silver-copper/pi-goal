@@ -55,6 +55,10 @@ Try this package locally from the repository root:
 pi -e ./packages/pi-goal
 ```
 
+The package declares `dist/index.ts`, so an unbuilt local checkout must run `npm --workspace @narumitw/pi-goal run build` before Pi loads the package directory.
+
+`just try goal` runs that build automatically.
+
 ## ⚙️ Configuration
 
 Settings are optional. When `~/.pi/agent/pi-goal.json` is absent, pi-goal uses these
@@ -321,6 +325,9 @@ This breaking contract replaces and removes `pi-goal:rpc:start`, `pi-goal:rpc:pa
 
 ```txt
 packages/pi-goal/
+├── dist/                  # Generated TypeScript runtime loaded by Jiti
+├── scripts/
+│   └── build-runtime.mjs  # Deterministic runtime builder and boundary validator
 ├── src/
 │   ├── index.ts      # Pi package entrypoint
 │   ├── goal.ts       # Order-explicit extension composition root
@@ -347,10 +354,12 @@ packages/pi-goal/
 ```json
 {
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./dist/index.ts"]
   }
 }
 ```
+
+The generated runtime is built from the authoritative `src/index.ts` graph and does not import back into `src`.
 
 ## 🔎 Keywords
 
