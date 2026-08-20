@@ -49,15 +49,14 @@ Try without installing permanently:
 pi -e npm:@narumitw/pi-goal
 ```
 
-Try this package locally from the repository root:
+Build and try this package locally from the repository root:
 
 ```bash
+npm --workspace @narumitw/pi-goal run build
 pi -e ./packages/pi-goal
 ```
 
-The package declares `dist/index.ts`, so an unbuilt local checkout must run `npm --workspace @narumitw/pi-goal run build` before Pi loads the package directory.
-
-`just try goal` runs that build automatically.
+The package declares `dist/index.ts`, so an unbuilt local checkout must run the build before Pi loads the package directory.
 
 ## ⚙️ Configuration
 
