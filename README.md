@@ -58,7 +58,12 @@ pi -e ./packages/pi-goal
 
 The package declares `dist/index.ts`, so an unbuilt local checkout must run the build before Pi loads the package directory.
 
-## ⚙️ Configuration
+## 🚀 Quick start
+
+Run `/goal <objective>` to start working toward an objective, or run `/goal` to open the state-aware manager.
+Use the manager to review status, pause, resume, edit, or clear the current goal.
+
+## ⚙️ Settings
 
 Settings are optional. When `~/.pi/agent/pi-goal.json` is absent, pi-goal uses these
 built-in defaults without creating the file:
@@ -109,7 +114,7 @@ restores only the exact tools that pi-goal previously hid, while switching to
 
 Tool visibility is a baseline, not ownership of Pi's global active-tool list. Plan mode or another restrictive policy may temporarily hide the tools. pi-goal does not fight that policy on restore or on every turn: activation is rejected if the required terminal tools cannot be made available, and an already-active goal is paused without automatic continuation if they disappear. A restrictive allowlist created before `goal_wait` existed can still run ordinary Goals with `goal_complete` and `goal_blocked`, but the model cannot enter external waiting until that allowlist also includes `goal_wait`. The pause aborts a Goal-owned kickoff, resume, active-edit, or automatic-continuation prompt, but it does not cancel or stale-block an unrelated user or extension turn, including startup follow-ups after a restrictive restore.
 
-## 🚀 Commands
+## 💬 Commands
 
 ```text
 /goal
@@ -152,6 +157,12 @@ Former queue command words such as `add`, `prioritize`, `drop-last`, `skip`, `pu
 If a session still has legacy queue settings or persisted queue state, those words show a migration warning instead of replacing the active Goal.
 
 Goal objectives are limited to 4,000 characters. Put longer instructions in a file and reference the file path from `/goal`.
+
+## 🛠️ Tools
+
+- `goal_complete` records completion only for the exact active goal id and requires an evidence-based summary.
+- `goal_blocked` records a true repeated impasse with the exact goal id, reason, evidence, and repeated-turn count.
+- `goal_wait` pauses automatic continuation after the agent arranges an external wake source, with an optional bounded resume deadline.
 
 ## 🔁 Session and reload behavior
 
