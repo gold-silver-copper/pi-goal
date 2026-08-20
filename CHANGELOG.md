@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.52.2
+
+### Patch Changes
+
+- 30bc076: Load each extension from a generated TypeScript runtime to reduce Jiti package startup work while preserving existing first-use boundaries.
+
 ## 0.52.1
 
 ### Patch Changes
