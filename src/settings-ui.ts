@@ -19,6 +19,8 @@ interface GoalSettingsApplyOptions {
 	save?: (settings: GoalSettings) => void;
 }
 
+class WorkflowBusyError extends Error {}
+
 type LimitField = "automaticTurns" | "noProgressTurns";
 type LimitSelection = "unlimited" | "default" | "custom" | "off";
 export async function showGoalSettings(
@@ -324,45 +326,59 @@ export function applyGoalSettings(
 	options: GoalSettingsApplyOptions = {},
 ) {
 	const snapshot = runtime.snapshotSettingsApplicationState();
+	const visibilityChanges = snapshot.settings.toolVisibility !== next.toolVisibility;
+	const releaseWorkflow = visibilityChanges
+		? runtime.beginTemporaryWorkflowAccess(ctx.sessionManager)
+		: () => undefined;
+	if (!releaseWorkflow) {
+		throw new WorkflowBusyError(
+			"Another workflow is active in this session. Goal tool visibility was not changed.",
+		);
+	}
+
 	let fileSaved = false;
 	try {
-		runtime.settings = structuredClone(next);
-		applyToolVisibility(runtime, snapshot.settings, next, ctx);
-		options.save?.(next);
-		fileSaved = options.save !== undefined;
-		const activeGoalId = runtime.activeGoal?.id;
-		const abortOwnedRun = activeGoalId !== undefined && runtime.agentRunGoalId === activeGoalId;
-		const pausedByAutomaticLimit = runtime.enforceAutomaticTurnLimit(ctx, abortOwnedRun);
-		if (!pausedByAutomaticLimit) runtime.enforceNoProgressLimit(ctx, abortOwnedRun);
-		if (runtime.activeGoal) {
-			runtime.updateStatus(ctx, runtime.activeGoal);
-		}
-	} catch (error) {
-		const rollbackErrors: unknown[] = [];
 		try {
-			runtime.restoreSettingsApplicationState(snapshot);
-		} catch (rollbackError) {
-			rollbackErrors.push(rollbackError);
-		}
-		if (fileSaved) {
+			applyToolVisibility(runtime, snapshot.settings, next, ctx);
+			runtime.settings = structuredClone(next);
+			options.save?.(next);
+			fileSaved = options.save !== undefined;
+			const activeGoalId = runtime.activeGoal?.id;
+			const abortOwnedRun = activeGoalId !== undefined && runtime.agentRunGoalId === activeGoalId;
+			const pausedByAutomaticLimit = runtime.enforceAutomaticTurnLimit(ctx, abortOwnedRun);
+			if (!pausedByAutomaticLimit) runtime.enforceNoProgressLimit(ctx, abortOwnedRun);
+			if (runtime.activeGoal) {
+				runtime.updateStatus(ctx, runtime.activeGoal);
+			}
+		} catch (error) {
+			const rollbackErrors: unknown[] = [];
 			try {
-				options.save?.(snapshot.settings);
+				runtime.restoreSettingsApplicationState(snapshot);
 			} catch (rollbackError) {
 				rollbackErrors.push(rollbackError);
 			}
-			try {
-				restorePersistedRuntime(runtime, ctx);
-			} catch (rollbackError) {
-				rollbackErrors.push(rollbackError);
+			if (fileSaved) {
+				try {
+					options.save?.(snapshot.settings);
+				} catch (rollbackError) {
+					rollbackErrors.push(rollbackError);
+				}
+				try {
+					restorePersistedRuntime(runtime, ctx);
+				} catch (rollbackError) {
+					rollbackErrors.push(rollbackError);
+				}
 			}
+			if (rollbackErrors.length > 0) {
+				throw new AggregateError(
+					[error, ...rollbackErrors],
+					`pi-goal settings application failed and rollback was incomplete: ${formatError(error)}`,
+				);
+			}
+			throw error;
 		}
-		if (rollbackErrors.length > 0) {
-			throw new AggregateError(
-				[error, ...rollbackErrors],
-				`pi-goal settings application failed and rollback was incomplete: ${formatError(error)}`,
-			);
-		}
-		throw error;
+	} finally {
+		releaseWorkflow();
 	}
 }
 
@@ -424,6 +440,7 @@ function applyToolVisibility(
 	next: GoalSettings,
 	ctx: ExtensionCommandContext,
 ) {
+	if (previous.toolVisibility === next.toolVisibility) return;
 	runtime.toolPolicy.applyVisibilityChange(
 		previous.toolVisibility,
 		next.toolVisibility,

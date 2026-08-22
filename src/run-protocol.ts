@@ -223,7 +223,7 @@ export class GoalRunController {
 		this.usedRunIds.add(runId);
 
 		try {
-			await this.commands.startGoal(
+			const activation = await this.commands.startGoal(
 				parsed.objective,
 				parsed.tokenBudget,
 				session.ctx,
@@ -232,6 +232,16 @@ export class GoalRunController {
 				},
 				() => this.ownsRun(run, session.generation),
 			);
+			if (activation?.kind === "busy" && this.ownsRun(run, session.generation)) {
+				this.closeCurrentRun();
+				this.emitError(
+					runId,
+					"start",
+					"ACTIVATION_FAILED",
+					"Another workflow is active in this session. End it before starting Goal.",
+				);
+				return;
+			}
 		} catch (error) {
 			if (this.ownsRun(run, session.generation)) {
 				this.closeCurrentRun();

@@ -539,9 +539,16 @@ test("failed start delivery clears a new goal and restores a replaced stopped go
 	const restoredActive = requireLastGoal(activeReplacement.mock);
 	assert.equal(restoredActive.id, activeOriginal.id);
 	assert.equal(restoredActive.text, activeOriginal.text);
-	assert.equal(restoredActive.status, "paused");
+	assert.equal(restoredActive.status, "active");
 	assert.equal(restoredActive.tokensUsed, 5);
-	assert.equal(activeReplacementAborts, 1);
+	assert.equal(activeReplacementAborts, 0);
+	const replacementOwner = {
+		session: (activeReplacement.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	activeReplacement.mock.eventBus.emit("workflow:mutex:v1", replacementOwner);
+	assert.equal(replacementOwner.busy, true);
 
 	const replacement = await startGoalForTest();
 	await replacement.mock.commands.get("goal")?.handler("pause", replacement.ctx);
@@ -563,7 +570,7 @@ test("failed start delivery clears a new goal and restores a replaced stopped go
 	);
 });
 
-test("failed active edit delivery restores and pauses the prior goal", async () => {
+test("failed active edit delivery restores the exact prior active goal", async () => {
 	let aborts = 0;
 	const edited = await startGoalForTest({ abort: () => aborts++ });
 	const original = requireLastGoal(edited.mock);
@@ -575,14 +582,21 @@ test("failed active edit delivery restores and pauses the prior goal", async () 
 	const restored = requireLastGoal(edited.mock);
 	assert.equal(restored.id, original.id);
 	assert.equal(restored.text, original.text);
-	assert.equal(restored.status, "paused");
-	assert.equal(aborts, 1);
-	assert.deepEqual(
+	assert.equal(restored.status, "active");
+	assert.equal(aborts, 0);
+	const editOwner = {
+		session: (edited.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	edited.mock.eventBus.emit("workflow:mutex:v1", editOwner);
+	assert.equal(editOwner.busy, true);
+	assert.equal(
 		edited.mock.events.get("tool_call")?.[0]?.(
 			{ toolName: "bash", toolCallId: "stale-after-edit-failure", input: {} },
 			edited.ctx,
 		),
-		{ block: true, reason: STALE_GOAL_TOOL_REASON },
+		undefined,
 	);
 });
 

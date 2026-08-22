@@ -299,7 +299,7 @@ test("goal_blocked ownership stays on the root instance after child start", asyn
 	child.events.get("session_shutdown")?.[0]?.({}, childContext.ctx);
 });
 
-test("pending continuation and budget state survive later child startup", async () => {
+test("pending continuation and stopped budget state survive later child startup", async () => {
 	const rootBranch: Array<Record<string, unknown>> = [assistantUsageEntry({ totalTokens: 0 })];
 	const root = createMockPi();
 	registerGoal(root.pi);
@@ -327,29 +327,24 @@ test("pending continuation and budget state survive later child startup", async 
 	assert.match(staleContinuation, new RegExp(`<!-- pi-goal-continuation:${rootGoal.id}:`));
 	assert.equal(child.sentUserMessages.length, 0);
 
-	// Establish the parent budget wrap-up before another child starts. Its context marker
-	// must remain authorized by the parent runtime after that later child session_start.
+	// Exhaust the parent budget before another child starts. No follow-up work is queued,
+	// and a historical wrap-up marker remains stale after the child startup.
 	rootBranch.push(assistantUsageEntry({ totalTokens: 5 }));
 	root.events.get("tool_execution_end")?.[0]?.({}, rootContext.ctx);
 	assert.equal(lastGoalStatus(root), "budget_limited");
-	const wrapUp = root.sentMessages.at(-1)?.message as {
-		customType?: string;
-		details?: { goalId?: string };
-	};
-	assert.equal(wrapUp?.customType, "goal-budget-wrap-up");
-	assert.equal(wrapUp?.details?.goalId, rootGoal.id);
+	assert.equal(root.sentMessages.length, 0);
 
 	const laterChild = createMockPi();
 	registerGoal(laterChild.pi);
 	const laterChildContext = createMockContext();
 	laterChild.events.get("session_start")?.[0]?.({}, laterChildContext.ctx);
 	const contextMessages = [
-		{ role: "custom", customType: wrapUp.customType, details: wrapUp.details },
+		{ role: "custom", customType: "goal-budget-wrap-up", details: { goalId: rootGoal.id } },
 		{ role: "user", content: "continue" },
 	];
-	assert.equal(
+	assert.deepEqual(
 		root.events.get("context")?.[0]?.({ messages: contextMessages }, rootContext.ctx),
-		undefined,
+		{ messages: [{ role: "user", content: "continue" }] },
 	);
 	assert.equal(child.sentMessages.length, 0);
 	assert.equal(laterChild.sentMessages.length, 0);

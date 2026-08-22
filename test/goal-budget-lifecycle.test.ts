@@ -36,7 +36,7 @@ test("tool_execution_end pauses a goal before another turn when terminal tools d
 	);
 });
 
-test("tool_execution_end enforces budget once and injects one bounded wrap-up", async () => {
+test("tool_execution_end stops budget work, blocks stale tools, and releases the workflow", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	let aborts = 0;
 	const budgeted = await startGoalForTest(
@@ -62,21 +62,7 @@ test("tool_execution_end enforces budget once and injects one bounded wrap-up", 
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
 	assert.equal(requireLastGoal(budgeted.mock).tokensUsed, 12);
 	assert.equal(budgeted.statuses.get("goal"), "budget 12/10 · automatic 0/25");
-	assert.equal(budgeted.mock.sentMessages.length, 1);
-	const wrapUp = budgeted.mock.sentMessages[0];
-	assert.ok(wrapUp);
-	assert.deepEqual(wrapUp.options, { deliverAs: "steer" });
-	const wrapUpMessage = wrapUp.message as { customType?: string; content?: string };
-	assert.equal(wrapUpMessage.customType, "goal-budget-wrap-up");
-	assert.match(String(wrapUpMessage.content), /stop substantive work/i);
-	assert.match(String(wrapUpMessage.content), /do not call substantive tools/i);
-	assert.match(String(wrapUpMessage.content), /summarize progress/i);
-	assert.match(String(wrapUpMessage.content), /goal_complete.*evidence/i);
-	assert.match(String(wrapUpMessage.content), /completion as unproven/i);
-	assert.match(String(wrapUpMessage.content), /weak, indirect, or missing evidence/i);
-	assert.match(String(wrapUpMessage.content), /budget exhaustion.*not completion/i);
-	assert.ok(String(wrapUpMessage.content).length < 1_000);
-
+	assert.equal(budgeted.mock.sentMessages.length, 0);
 	await budgeted.mock.events.get("agent_settled")?.[0]?.({}, budgeted.ctx);
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);
 	assert.deepEqual(
@@ -84,20 +70,9 @@ test("tool_execution_end enforces budget once and injects one bounded wrap-up", 
 			{ toolName: "bash", toolCallId: "substantive-after-budget", input: {} },
 			budgeted.ctx,
 		),
-		{
-			block: true,
-			reason: "Goal token budget is exhausted; only goal_complete is allowed during wrap-up.",
-		},
+		{ block: true, reason: STALE_GOAL_TOOL_REASON },
 	);
-	assert.equal(aborts, 1);
-	assert.equal(
-		budgeted.mock.events.get("tool_call")?.[0]?.(
-			{ toolName: "goal_complete", toolCallId: "complete-after-budget", input: {} },
-			budgeted.ctx,
-		),
-		undefined,
-	);
-
+	assert.equal(aborts, 2);
 	const completion = await requireGoalTool(budgeted.mock, "goal_complete").execute(
 		"complete-after-budget",
 		{ goal_id: goalId, summary: "All requirements were already implemented and verified." },
@@ -105,11 +80,18 @@ test("tool_execution_end enforces budget once and injects one bounded wrap-up", 
 		() => undefined,
 		budgeted.ctx,
 	);
-	assert.equal(completion.terminate, true);
-	assert.equal(lastGoalStatus(budgeted.mock), null);
+	assert.equal(completion.terminate, undefined);
+	assert.match(completion.content?.[0]?.text ?? "", /budget_limited, not active/i);
+	const released = {
+		session: (budgeted.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	budgeted.mock.eventBus.emit("workflow:mutex:v1", released);
+	assert.equal(released.busy, false);
 });
 
-test("rejected completion closes a budget wrap-up without another model call", async () => {
+test("rejected completion cannot revive a budget-limited goal", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -129,7 +111,7 @@ test("rejected completion closes a budget wrap-up without another model call", a
 		() => undefined,
 		budgeted.ctx,
 	);
-	assert.equal(rejected.terminate, true);
+	assert.equal(rejected.terminate, undefined);
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
 
 	const retry = await requireGoalTool(budgeted.mock, "goal_complete").execute(
@@ -143,7 +125,7 @@ test("rejected completion closes a budget wrap-up without another model call", a
 	assert.match(retry.content?.[0]?.text ?? "", /budget_limited, not active/i);
 });
 
-test("stale completion also closes a budget wrap-up after recording final usage", async () => {
+test("stale completion cannot revive a budget-limited goal", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -164,9 +146,9 @@ test("stale completion also closes a budget wrap-up after recording final usage"
 		() => undefined,
 		budgeted.ctx,
 	);
-	assert.equal(rejected.terminate, true);
+	assert.equal(rejected.terminate, undefined);
 	assert.match(rejected.content?.[0]?.text ?? "", /goal_id does not match/i);
-	assert.equal(requireLastGoal(budgeted.mock).tokensUsed, 15);
+	assert.equal(requireLastGoal(budgeted.mock).tokensUsed, 12);
 
 	const retry = await requireGoalTool(budgeted.mock, "goal_complete").execute(
 		"retry-after-stale-budget-completion",
@@ -178,7 +160,7 @@ test("stale completion also closes a budget wrap-up after recording final usage"
 	assert.match(retry.content?.[0]?.text ?? "", /budget_limited, not active/i);
 });
 
-test("failed budget wrap-up delivery retries once without duplicate accepted messages", async () => {
+test("budget exhaustion never queues or retries a follow-up wrap-up", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -200,7 +182,7 @@ test("failed budget wrap-up delivery retries once without duplicate accepted mes
 	);
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
 	assert.equal(budgeted.mock.sentMessages.length, 0);
-	assert.match(budgeted.notifications.at(-1)?.message ?? "", /queue unavailable/i);
+	assert.match(budgeted.notifications.at(-1)?.message ?? "", /token budget reached/i);
 
 	await toolEnd?.(
 		{ toolCallId: "tool-2", toolName: "read", result: {}, isError: false },
@@ -210,8 +192,8 @@ test("failed budget wrap-up delivery retries once without duplicate accepted mes
 		{ toolCallId: "tool-3", toolName: "read", result: {}, isError: false },
 		budgeted.ctx,
 	);
-	assert.equal(attempts, 2);
-	assert.equal(budgeted.mock.sentMessages.length, 1);
+	assert.equal(attempts, 0);
+	assert.equal(budgeted.mock.sentMessages.length, 0);
 });
 
 test("budget wrap-up permission closes at agent_end and stale context is filtered", async () => {
@@ -253,7 +235,7 @@ test("budget wrap-up permission closes at agent_end and stale context is filtere
 	assert.deepEqual(contextResult?.messages, [{ role: "user", content: "keep" }]);
 });
 
-test("budget wrap-up does not consume a pending transformed follow-up", async () => {
+test("budget stop preserves a pending transformed follow-up without resuming Goal work", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -275,34 +257,25 @@ test("budget wrap-up does not consume a pending transformed follow-up", async ()
 		budgeted.ctx,
 	);
 
-	assert.deepEqual(
-		budgeted.mock.events.get("tool_call")?.[0]?.(
-			{ toolName: "read", toolCallId: "wrap-up-read", input: {} },
-			budgeted.ctx,
-		),
-		{
-			block: true,
-			reason: "Goal token budget is exhausted; only goal_complete is allowed during wrap-up.",
-		},
-	);
 	assert.equal(
 		budgeted.mock.events.get("tool_call")?.[0]?.(
-			{ toolName: "goal_complete", toolCallId: "wrap-up-complete", input: {} },
+			{ toolName: "read", toolCallId: "after-budget-read", input: {} },
 			budgeted.ctx,
 		),
 		undefined,
 	);
 	const completion = await requireGoalTool(budgeted.mock, "goal_complete").execute(
-		"wrap-up-complete",
+		"after-budget-complete",
 		{ goal_id: goalId, summary: "All requirements were implemented and verified." },
 		new AbortController().signal,
 		() => undefined,
 		budgeted.ctx,
 	);
-	assert.equal(completion.terminate, true);
+	assert.equal(completion.terminate, undefined);
+	assert.match(completion.content?.[0]?.text ?? "", /current run does not own/i);
 });
 
-test("budget wrap-up custom message retains goal ownership through agent_end", async () => {
+test("budget stop queues no custom work and remains stopped through agent_end", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -313,28 +286,18 @@ test("budget wrap-up custom message retains goal ownership through agent_end", a
 		{ toolCallId: "tool-1", toolName: "bash", result: {}, isError: false },
 		budgeted.ctx,
 	);
-	const queuedWrapUp = budgeted.mock.sentMessages[0]?.message as
-		| Record<string, unknown>
-		| undefined;
-	assert.ok(queuedWrapUp);
-	const wrapUpMessage = { role: "custom", ...queuedWrapUp };
-
-	budgeted.mock.events.get("before_agent_start")?.[0]?.(
-		{ prompt: "budget wrap-up", systemPrompt: "base" },
-		budgeted.ctx,
-	);
-	budgeted.mock.events.get("message_start")?.[0]?.({ message: wrapUpMessage }, budgeted.ctx);
+	assert.equal(budgeted.mock.sentMessages.length, 0);
 	await budgeted.mock.events.get("agent_end")?.[0]?.(
-		{ messages: [wrapUpMessage, { role: "assistant", stopReason: "stop", content: [] }] },
+		{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
 		budgeted.ctx,
 	);
-
-	assert.equal(
+	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
+	assert.deepEqual(
 		budgeted.mock.events.get("tool_call")?.[0]?.(
-			{ toolName: "read", toolCallId: "after-wrap-up", input: {} },
+			{ toolName: "read", toolCallId: "after-budget", input: {} },
 			budgeted.ctx,
 		),
-		undefined,
+		{ block: true, reason: STALE_GOAL_TOOL_REASON },
 	);
 });
 
@@ -363,7 +326,7 @@ test("compaction cancels before retry when persisted usage has exhausted the bud
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);
 });
 
-test("budget edits require an actual increase before reactivating and rotate stale ids", async () => {
+test("budget edits require an actual increase before rotating the stale id", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const budgeted = await startGoalForTest(
 		{ sessionManager: { getBranch: () => branch, getEntries: () => branch } },
@@ -380,17 +343,10 @@ test("budget edits require an actual increase before reactivating and rotate sta
 	await budgeted.mock.commands.get("goal")?.handler("edit unchanged budget", budgeted.ctx);
 	const unchanged = requireLastGoal(budgeted.mock);
 	assert.equal(unchanged.status, "budget_limited");
-	assert.notEqual(unchanged.id, exhaustedGoal.id);
+	assert.equal(unchanged.id, exhaustedGoal.id);
+	assert.equal(unchanged.text, exhaustedGoal.text);
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);
-
-	const staleCompletion = await requireGoalTool(budgeted.mock, "goal_complete").execute(
-		"stale-budget-completion",
-		{ goal_id: exhaustedGoal.id, summary: "Stale completion." },
-		new AbortController().signal,
-		() => undefined,
-		budgeted.ctx,
-	);
-	assert.match(staleCompletion.content?.[0]?.text ?? "", /goal_id/i);
+	assert.match(budgeted.notifications.at(-1)?.message ?? "", /raise the budget/i);
 
 	await budgeted.mock.commands
 		.get("goal")

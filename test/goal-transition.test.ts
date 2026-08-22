@@ -5,7 +5,10 @@ import { createGoal, GoalRuntime } from "../src/runtime.js";
 
 function runtime() {
 	const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-	return { mock, state: new GoalRuntime(mock.pi) };
+	const state = new GoalRuntime(mock.pi);
+	state.bindWorkflowSession({});
+	assert.equal(state.acquireWorkflow(), true);
+	return { mock, state };
 }
 
 test("stopped transition owner applies explicit-pause invariants once", () => {

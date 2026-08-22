@@ -94,6 +94,8 @@ export class GoalToolPolicy {
 			this.reveal();
 			return;
 		}
+		if (this.hasHiddenTools()) this.restoreHidden();
+		this.unlock();
 		this.assertAvailable();
 	}
 

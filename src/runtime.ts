@@ -31,6 +31,7 @@ import {
 } from "./settings.js";
 import { GoalToolPolicy, type GoalToolVisibilitySnapshot } from "./tool-policy.js";
 import { type GoalWait, GoalWaitTimer } from "./wait.js";
+import { WorkflowMutex, type WorkflowMutexOwner } from "./workflow-mutex.js";
 
 export {
 	GOAL_BLOCKED_TOOL,
@@ -230,6 +231,9 @@ export class GoalRuntime {
 	guardAbortGoalId?: string;
 	staleGoalToolCallsBlocked = false;
 	readonly toolPolicy: GoalToolPolicy;
+	private readonly workflowMutex: WorkflowMutex;
+	private workflowOwner?: WorkflowMutexOwner;
+	private workflowSession?: object;
 	pendingGoalPromptMarkers = new Map<string, PendingGoalPrompt>();
 	claimedGoalPromptMarkers = new Map<string, string>();
 	cancelledGoalPromptMarkers = new Map<string, string>();
@@ -243,7 +247,67 @@ export class GoalRuntime {
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
+		this.workflowMutex = new WorkflowMutex(pi);
 		this.toolPolicy = new GoalToolPolicy(pi);
+	}
+
+	bindWorkflowSession(session: object) {
+		this.workflowSession = session;
+		this.workflowOwner = undefined;
+		this.workflowMutex.bindSession(session);
+	}
+
+	unbindWorkflowSession(session: object) {
+		if (this.workflowSession !== session) return;
+		this.workflowMutex.unbindSession(session);
+		this.workflowOwner = undefined;
+		this.workflowSession = undefined;
+	}
+
+	acquireWorkflow(session?: unknown) {
+		if (session && typeof session === "object" && this.workflowSession !== session) {
+			this.bindWorkflowSession(session);
+		}
+		if (this.workflowMutex.isOwner(this.workflowOwner)) return true;
+		const owner = this.workflowMutex.acquire();
+		if (!owner) return false;
+		this.workflowOwner = owner;
+		return true;
+	}
+
+	ownsWorkflow(goal: ActiveGoal | undefined = this.activeGoal) {
+		return goal?.status === "active" && this.workflowMutex.isOwner(this.workflowOwner);
+	}
+
+	releaseWorkflow() {
+		const owner = this.workflowOwner;
+		this.workflowMutex.release(owner);
+		if (!this.workflowMutex.isOwner(owner)) this.workflowOwner = undefined;
+	}
+
+	beginTemporaryWorkflowAccess(session?: unknown) {
+		if (session && typeof session === "object" && this.workflowSession !== session) {
+			this.bindWorkflowSession(session);
+		}
+		const alreadyOwned = this.workflowMutex.isOwner(this.workflowOwner);
+		if (!alreadyOwned && !this.acquireWorkflow()) return undefined;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			if (!alreadyOwned) this.releaseWorkflow();
+		};
+	}
+
+	withTemporaryWorkflowAccess(action: () => void, session?: unknown) {
+		const release = this.beginTemporaryWorkflowAccess(session);
+		if (!release) return false;
+		try {
+			action();
+			return true;
+		} finally {
+			release();
+		}
 	}
 
 	hasLegacyQueueInterface() {
@@ -344,6 +408,7 @@ export class GoalRuntime {
 	}
 
 	requestContinuation(goal: ActiveGoal) {
+		if (!this.ownsWorkflow(goal)) return false;
 		if (goal.waiting || this.hasContinuationWorkForGoal(goal.id)) return false;
 		const marker = continuationMarker(goal);
 		this.continuationIntent = {
@@ -357,6 +422,10 @@ export class GoalRuntime {
 
 	dispatchContinuationIfSettled(ctx: StatusContext) {
 		const intent = this.continuationIntent;
+		if (!this.ownsWorkflow()) {
+			this.cancelContinuationWork();
+			return false;
+		}
 		if (!intent) return false;
 		if (this.activeGoal?.status === "active" && !this.toolPolicy.toolsAvailable()) {
 			this.pauseGoalForUnavailableTools(ctx);
@@ -402,7 +471,7 @@ export class GoalRuntime {
 
 	enterGoalWait(ctx: StatusContext, goalId: string, waiting: GoalWait) {
 		const goal = this.activeGoal;
-		if (!goal || goal.id !== goalId || goal.status !== "active") return undefined;
+		if (!goal || goal.id !== goalId || !this.ownsWorkflow(goal)) return undefined;
 		this.recordGoalUsage(goal, ctx, false);
 		this.cancelContinuationWork();
 		this.clearGoalRecoveryForGoal(goal.id);
@@ -421,7 +490,7 @@ export class GoalRuntime {
 
 	clearGoalWait(ctx: StatusContext, goalId: string) {
 		const goal = this.activeGoal;
-		if (!goal || goal.id !== goalId || goal.status !== "active" || !goal.waiting) return false;
+		if (!goal || goal.id !== goalId || !this.ownsWorkflow(goal) || !goal.waiting) return false;
 		this.clearGoalWaitTimer();
 		const { waiting: _waiting, ...nextGoal } = goal;
 		const now = Date.now();
@@ -436,6 +505,7 @@ export class GoalRuntime {
 	restoreGoalWaitTimer(ctx: StatusContext) {
 		this.clearGoalWaitTimer();
 		const goal = this.activeGoal;
+		if (!this.ownsWorkflow(goal)) return false;
 		const resumeAt = goal?.status === "active" ? goal.waiting?.resumeAt : undefined;
 		if (!goal || resumeAt === undefined) return false;
 		this.scheduleGoalWaitTimer(ctx, goal.id, resumeAt);
@@ -444,6 +514,7 @@ export class GoalRuntime {
 
 	dispatchDueGoalWait(ctx: StatusContext) {
 		const goal = this.activeGoal;
+		if (!this.ownsWorkflow(goal)) return false;
 		const waiting = goal?.status === "active" ? goal.waiting : undefined;
 		const resumeAt = waiting?.resumeAt;
 		if (!goal || !waiting || resumeAt === undefined) return false;
@@ -480,7 +551,13 @@ export class GoalRuntime {
 	private scheduleGoalWaitTimer(ctx: StatusContext, goalId: string, wakeAt: number) {
 		const generation = this.menuGeneration;
 		this.goalWaitTimer.schedule(wakeAt, () => {
-			if (generation !== this.menuGeneration || this.activeGoal?.id !== goalId) return;
+			if (
+				generation !== this.menuGeneration ||
+				this.activeGoal?.id !== goalId ||
+				!this.ownsWorkflow(this.activeGoal)
+			) {
+				return;
+			}
 			try {
 				this.dispatchDueGoalWait(ctx);
 			} catch (error) {
@@ -550,6 +627,8 @@ export class GoalRuntime {
 				this.cancelContinuationWork();
 				this.clearGoalRecoveryForGoal(goal.id);
 				this.clearBudgetWrapUp();
+				this.blockStaleGoalToolCalls();
+				abortCurrentTurn(ctx);
 				status = "budget_limited";
 				terminalReason = request.reason;
 				break;
@@ -618,6 +697,7 @@ export class GoalRuntime {
 		this.persistGoal(stoppedGoal);
 		if (this.activeGoal?.id === stoppedGoal.id && this.activeGoal.status === stoppedGoal.status) {
 			this.updateStatus(ctx, stoppedGoal);
+			this.releaseWorkflow();
 		}
 		return stoppedGoal;
 	}
@@ -676,6 +756,7 @@ export class GoalRuntime {
 	}
 
 	queueBudgetWrapUp(ctx: StatusContext, goal: ActiveGoal) {
+		if (!this.ownsWorkflow(goal)) return false;
 		if (!this.budgetWrapUp || this.budgetWrapUp.goalId !== goal.id) {
 			this.budgetWrapUp = { goalId: goal.id, delivered: false };
 		}
@@ -872,9 +953,15 @@ export class GoalRuntime {
 		resetSafetyEpoch = true,
 		isCurrent?: () => boolean,
 	) {
+		if (this.activeGoal?.id !== goalId || !this.ownsWorkflow(this.activeGoal)) return false;
 		const pending = this.rememberPendingGoalPrompt(goalId, prompt, resetSafetyEpoch);
 		const sent = await sendPrompt(this.pi, ctx, pending.prompt, isCurrent);
-		if (!sent || (isCurrent && !isCurrent())) {
+		if (
+			!sent ||
+			(isCurrent && !isCurrent()) ||
+			this.activeGoal?.id !== goalId ||
+			!this.ownsWorkflow(this.activeGoal)
+		) {
 			this.pendingGoalPromptMarkers.delete(pending.marker);
 			return false;
 		}
@@ -898,7 +985,7 @@ export class GoalRuntime {
 			if (
 				generation !== this.menuGeneration ||
 				this.activeGoal?.id !== goalId ||
-				this.activeGoal.status !== "active"
+				!this.ownsWorkflow(this.activeGoal)
 			) {
 				return;
 			}
@@ -1113,7 +1200,7 @@ export class GoalRuntime {
 		clearLegacyPersistedGoal(cwd);
 	}
 
-	clearActiveGoal(ctx: StatusContext, reason = "goal cleared") {
+	clearActiveGoal(ctx: StatusContext, reason = "goal cleared", releaseWorkflow = true) {
 		const clearedGoal = this.activeGoal;
 		this.clearGoalWaitTimer();
 		this.cancelContinuationWork();
@@ -1124,6 +1211,7 @@ export class GoalRuntime {
 		this.legacyQueueState = undefined;
 		this.clearPersistedGoal(ctx.cwd, clearedGoal, reason);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
+		if (releaseWorkflow) this.releaseWorkflow();
 		// Do not relock toolPolicy: after first activation, keep tools visible for the
 		// rest of this extension runtime to avoid repeated tool-schema churn.
 	}
@@ -1151,6 +1239,9 @@ export class GoalRuntime {
 	}
 
 	restoreSettingsApplicationState(snapshot: GoalSettingsRuntimeSnapshot) {
+		if (snapshot.activeGoal?.status === "active" && !this.acquireWorkflow()) {
+			throw new Error("another workflow became active before Goal settings could roll back");
+		}
 		this.settings = structuredClone(snapshot.settings);
 		this.activeGoal = snapshot.activeGoal ? structuredClone(snapshot.activeGoal) : undefined;
 		this.legacyQueueState = snapshot.legacyQueueState
@@ -1408,11 +1499,16 @@ export function abortCurrentTurn(ctx: StatusContext) {
 }
 
 export function blocksStaleGoalToolCalls(status: GoalStatus) {
-	return status === "paused" || status === "blocked" || status === "usage_limited";
+	return (
+		status === "paused" ||
+		status === "blocked" ||
+		status === "usage_limited" ||
+		status === "budget_limited"
+	);
 }
 
 export function isResumableGoalStatus(status: GoalStatus) {
-	return blocksStaleGoalToolCalls(status) || status === "budget_limited";
+	return blocksStaleGoalToolCalls(status);
 }
 
 export function stoppedStatusLabel(status: GoalStatus) {

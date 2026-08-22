@@ -24,8 +24,28 @@ test("declared generated entry preserves registration and partial lifecycle clea
 		assert.ok(mock.commands.has("goal"));
 		assert.ok(mock.events.has("session_start"));
 		assert.ok(mock.events.has("session_shutdown"));
-		const context = createMockContext({ mode: "tui", cwd: root });
+		const sessionManager = {
+			getSessionId: () => "generated-goal-session",
+			getSessionName: () => undefined,
+			getBranch: () => [],
+			getEntries: () => [],
+		};
+		const context = createMockContext({
+			mode: "tui",
+			hasUI: true,
+			cwd: root,
+			sessionManager,
+		});
+		await emit(mock.events, "session_start", { reason: "startup" }, context.ctx);
+		await mock.commands.get("goal")?.handler("generated goal", context.ctx);
+		const activeAttempt = { session: sessionManager, group: "agent-workflow", busy: false };
+		mock.eventBus.emit("workflow:mutex:v1", activeAttempt);
+		assert.equal(activeAttempt.busy, true);
+
 		await emit(mock.events, "session_shutdown", { reason: "quit" }, context.ctx);
+		const releasedAttempt = { ...activeAttempt, busy: false };
+		mock.eventBus.emit("workflow:mutex:v1", releasedAttempt);
+		assert.equal(releasedAttempt.busy, false);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
