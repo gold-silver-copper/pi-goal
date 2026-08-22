@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.53.0
+
+### Minor Changes
+
+- b23a1bc: Coordinate automatically executable Goals through Workflow Mutex Protocol v1 and stop Goal-owned work immediately at terminal limits.
+
 ## 0.52.3
 
 ### Patch Changes
