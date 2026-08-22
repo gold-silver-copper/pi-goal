@@ -154,7 +154,13 @@ An active Goal still pauses if a non-participating restrictive policy later remo
 The coexistence guarantee is cooperative and applies only when every contender implements v1 on the characterized Pi runtime and shares its event bus and session-manager identity.
 A pre-v1, mixed-version, non-participating, forked, or otherwise uncharacterized counterpart remains unsupported for mutual exclusion.
 Goal does not identify, inspect, configure, start, stop, or depend on another extension.
-The reciprocal minimum package versions will be documented only after both products pass the coexistence release matrix.
+Guaranteed coexistence with Plan mode requires `@narumitw/pi-plan-mode` `0.52.0` or newer and this package at `0.53.0` or newer on the characterized Pi `0.84.2` runtime.
+
+| Installation | Support |
+| --- | --- |
+| Goal without another workflow participant | Supported standalone behavior |
+| Goal `>=0.53.0` with Plan mode `>=0.52.0` on Pi `0.84.2` | Workflow Mutex v1 coexistence guarantee |
+| Either package below its floor, or another Pi runtime | Standalone behavior only; mutual exclusion unsupported |
 
 ## 💬 Commands
 
