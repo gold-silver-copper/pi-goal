@@ -82,12 +82,6 @@ export function loadGoalStateFromSession(ctx: SessionContext): LoadedGoalState {
 	return legacyEntry ? loadLegacyGoalsState(legacyEntry.data) : emptyGoalState("none");
 }
 
-export function loadGoalFromSession(ctx: SessionContext): ActiveGoal | undefined {
-	const loaded = loadGoalStateFromSession(ctx);
-	if (loaded.legacyQueueState || loaded.goal?.status === "complete") return undefined;
-	return loaded.goal;
-}
-
 function loadCanonicalGoalState(data: unknown): LoadedGoalState {
 	if (!isRecord(data)) return emptyGoalState("canonical");
 	const rawGoal = data.goal;

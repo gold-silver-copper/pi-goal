@@ -7,12 +7,7 @@ import { createMockContext, createMockPi } from "../../../test/support.js";
 import { GoalCommandController } from "../src/commands.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
 import { DEFAULT_GOAL_SETTINGS, type GoalSettings } from "../src/settings.js";
-import {
-	applyGoalSettings,
-	formatGoalLimit,
-	parseGoalLimit,
-	showGoalSettings,
-} from "../src/settings-ui.js";
+import { applyGoalSettings, parseGoalLimit, showGoalSettings } from "../src/settings-ui.js";
 
 initTheme("dark", false);
 
@@ -48,8 +43,6 @@ test("goal setting custom limits accept only safe whole numbers greater than zer
 	]) {
 		assert.equal(parseGoalLimit(invalid), undefined);
 	}
-	assert.equal(formatGoalLimit(25), "25");
-	assert.equal(formatGoalLimit(null), "Unlimited");
 });
 
 test("applyGoalSettings saves before committing runtime settings and enforces lower limits", () => {

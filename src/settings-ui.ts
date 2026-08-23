@@ -389,10 +389,6 @@ export function parseGoalLimit(value: string): number | undefined {
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export function formatGoalLimit(value: number | null) {
-	return value === null ? "Unlimited" : String(value);
-}
-
 async function resolveLimitSelection(
 	field: LimitField,
 	selection: LimitSelection,
