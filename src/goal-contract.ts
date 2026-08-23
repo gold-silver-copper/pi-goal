@@ -1,5 +1,5 @@
 import type { GoalPromptContext } from "./prompts.js";
-import { buildGoalCompactionPrompt } from "./prompts.js";
+import { buildGoalContextPrompt } from "./prompts.js";
 
 export const GOAL_CONTRACT_MESSAGE_TYPE = "goal-contract";
 export const GOAL_CONTRACT_VERSION = 1;
@@ -10,22 +10,20 @@ interface ContractMessage {
 	content?: unknown;
 }
 
-export function createGoalCompactionContract(goal: GoalPromptContext) {
+export function createGoalContextContract(goal: GoalPromptContext) {
 	return {
 		role: "custom" as const,
 		customType: GOAL_CONTRACT_MESSAGE_TYPE,
-		content: buildGoalCompactionPrompt(goal),
+		content: buildGoalContextPrompt(goal),
 		display: false,
 		details: { version: GOAL_CONTRACT_VERSION, goalId: goal.id },
 		timestamp: 0,
 	};
 }
 
-export function reconcileGoalCompactionContract(messages: unknown[], goal: GoalPromptContext) {
+export function reconcileGoalContextContract(messages: unknown[], goal: GoalPromptContext) {
 	const summaryBoundary = leadingSummaryBoundary(messages);
-	if (summaryBoundary === 0) return messages;
-
-	const expected = createGoalCompactionContract(goal);
+	const expected = createGoalContextContract(goal);
 	const contractIndexes = messages.flatMap((message, index) =>
 		unwrapMessage(message).customType === GOAL_CONTRACT_MESSAGE_TYPE ? [index] : [],
 	);

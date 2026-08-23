@@ -297,7 +297,8 @@ They treat the current worktree, command output, tests, runtime behavior, PR sta
 With the default `toolVisibility: "after-first-goal"`, the first accepted Goal activation intentionally reveals the three Goal tools and changes the tool-definition prefix once.
 After that activation boundary, pi-goal does not change the base system instructions or ordered active tools merely for continuation, token accounting, or wait resume.
 Current token-budget usage is carried by the newly appended Goal prompt instead of rewriting leading system instructions.
-After compaction replaces the original handoff, one deterministic hidden Goal contract follows the leading summary and excludes mutable token, iteration, and elapsed-time counters.
+For every active Goal, one deterministic hidden Goal contract occupies a fixed leading boundary and excludes mutable token, iteration, and elapsed-time counters.
+This contract follows leading summaries after compaction and also restores Goal instructions when persisted active state has no retained handoff.
 These structural guarantees make provider prefix reuse possible, but the provider still decides cache eligibility, cache hits, pricing, and billing.
 
 Before completion, the shared audit tells the agent to treat completion as unproven, inspect requirement-by-requirement evidence for every named artifact, command, test, gate, invariant, and deliverable, and match each check's scope to the requirement it supports.

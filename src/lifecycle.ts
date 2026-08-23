@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentTokenTotal } from "./accounting.js";
 import { notifyTerminal } from "./errors.js";
-import { reconcileGoalCompactionContract } from "./goal-contract.js";
+import { reconcileGoalContextContract } from "./goal-contract.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
 import type { GoalRunController } from "./run-protocol.js";
 import {
@@ -342,7 +342,7 @@ export function registerGoalLifecycle(
 		);
 		const messages =
 			runtime.activeGoal?.status === "active" && runtime.ownsWorkflow(runtime.activeGoal)
-				? reconcileGoalCompactionContract(keptMessages, runtime.activeGoal)
+				? reconcileGoalContextContract(keptMessages, runtime.activeGoal)
 				: keptMessages;
 		if (
 			runtime.activeGoal?.status === "paused" &&

@@ -9,6 +9,7 @@ import {
 	registerGoalWithSettingsPath,
 	requireGoalTool,
 	requireLastGoal,
+	restoreStoredGoalForTest,
 } from "./support/goal-fixture.js";
 
 interface CapturedRequest {
@@ -133,6 +134,39 @@ test("token-budgeted continuation and wait resume preserve the post-activation r
 	assert.deepEqual(resumed.messages.slice(0, continuation.messages.length), continuation.messages);
 	assert.match(continuationPrompt, /Token budget: 500\/10k used\./u);
 	assert.match(resumePrompt, /Token budget: 750\/10k used\./u);
+});
+
+test("restored active Goal without a retained handoff receives the Goal contract", async () => {
+	const restored = restoreStoredGoalForTest({
+		id: "restored-without-handoff",
+		text: "finish the restored objective",
+		status: "active",
+		startedAt: 1,
+		updatedAt: 2,
+		iteration: 1,
+		tokensUsed: 25,
+		timeUsedSeconds: 2,
+		baselineTokens: 0,
+	});
+	const beforeStart = await restored.mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: "ordinary restored turn", systemPrompt: "base" },
+		restored.ctx,
+	);
+	assert.equal(beforeStart, undefined);
+
+	const ordinaryMessage = userMessage("ordinary restored turn");
+	const transformed = (await restored.mock.events.get("context")?.[0]?.(
+		{ messages: [ordinaryMessage] },
+		restored.ctx,
+	)) as { messages?: unknown[] } | undefined;
+	assert.ok(transformed?.messages);
+	assert.equal(transformed.messages.length, 2);
+	assert.equal(transformed.messages[1], ordinaryMessage);
+	const contract = transformed.messages[0] as { customType?: string; content?: string };
+	assert.equal(contract.customType, "goal-contract");
+	assertPromptHasGoalId(contract.content ?? "", "restored-without-handoff");
+	assertHardenedGoalPrompt(contract.content ?? "");
+	assert.match(contract.content ?? "", /finish the restored objective/u);
 });
 
 test("compacted active Goal receives one cache-stable contract after summary messages", async () => {

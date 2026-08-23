@@ -56,8 +56,8 @@ export function buildGoalSystemPrompt(goal: GoalPromptContext) {
 	return `Active /goal:\n${goalContextBlock(goal)}\n\n${goalModeRules("the active goal")}${budgetLine}`;
 }
 
-export function buildGoalCompactionPrompt(goal: GoalPromptContext) {
-	return `Active /goal after context compaction:\n${goalContextBlock(goal)}\n\n${goalModeRules("the active goal")}`;
+export function buildGoalContextPrompt(goal: GoalPromptContext) {
+	return `Active /goal context:\n${goalContextBlock(goal)}\n\n${goalModeRules("the active goal")}`;
 }
 
 export function buildContinuePrompt(goal: GoalPromptContext, marker: string) {
