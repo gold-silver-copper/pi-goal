@@ -99,10 +99,7 @@ test("an external message quoting an owned prompt still wakes the goal and super
 		{ prompt: externalMessage, systemPrompt: "base" },
 		waiting.ctx,
 	);
-	assert.match(
-		(startResult as { systemPrompt?: string } | undefined)?.systemPrompt ?? "",
-		/Active \/goal/i,
-	);
+	assert.equal(startResult, undefined);
 	assert.deepEqual(
 		waiting.mock.events.get("input")?.[0]?.(
 			{ source: "extension", text: ownedKickoff, streamingBehavior: "followUp" },
@@ -130,10 +127,7 @@ test("a custom follow-up quoting an owned prompt wakes without an input event", 
 		waiting.ctx,
 	);
 	assert.equal(requireLastGoal(waiting.mock).waiting, undefined);
-	assert.match(
-		(startResult as { systemPrompt?: string } | undefined)?.systemPrompt ?? "",
-		/Active \/goal/i,
-	);
+	assert.equal(startResult, undefined);
 	assert.deepEqual(
 		waiting.mock.events.get("input")?.[0]?.(
 			{ source: "extension", text: ownedKickoff, streamingBehavior: "followUp" },

@@ -56,8 +56,14 @@ export function buildGoalSystemPrompt(goal: GoalPromptContext) {
 	return `Active /goal:\n${goalContextBlock(goal)}\n\n${goalModeRules("the active goal")}${budgetLine}`;
 }
 
+export function buildGoalCompactionPrompt(goal: GoalPromptContext) {
+	return `Active /goal after context compaction:\n${goalContextBlock(goal)}\n\n${goalModeRules("the active goal")}`;
+}
+
 export function buildContinuePrompt(goal: GoalPromptContext, marker: string) {
-	return `Continue the active /goal until it is complete:\n\n${goalContextBlock(goal)}\n\nThis is automatic continuation #${goal.iteration}. The full objective persists across turns; continue from the authoritative current state.\n\n${goalModeRules("this goal")}\n\n${continuationMarkerComment(marker)}`;
+	const budgetLine =
+		goal.tokenBudget === undefined ? "" : `\nToken budget: ${formatBudget(goal)} used.`;
+	return `Continue the active /goal until it is complete:\n\n${goalContextBlock(goal)}${budgetLine}\n\nThis is automatic continuation #${goal.iteration}. The full objective persists across turns; continue from the authoritative current state.\n\n${goalModeRules("this goal")}\n\n${continuationMarkerComment(marker)}`;
 }
 
 function goalContextBlock(goal: GoalPromptContext) {

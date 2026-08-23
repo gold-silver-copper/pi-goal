@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentTokenTotal } from "./accounting.js";
 import { notifyTerminal } from "./errors.js";
+import { reconcileGoalCompactionContract } from "./goal-contract.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
-import { buildGoalSystemPrompt } from "./prompts.js";
 import type { GoalRunController } from "./run-protocol.js";
 import {
 	type AssistantMessageLike,
@@ -337,7 +337,13 @@ export function registerGoalLifecycle(
 	});
 
 	pi.on("context", (event, ctx) => {
-		const messages = event.messages.filter((message) => runtime.keepBudgetWrapUpMessage(message));
+		const keptMessages = event.messages.filter((message) =>
+			runtime.keepBudgetWrapUpMessage(message),
+		);
+		const messages =
+			runtime.activeGoal?.status === "active" && runtime.ownsWorkflow(runtime.activeGoal)
+				? reconcileGoalCompactionContract(keptMessages, runtime.activeGoal)
+				: keptMessages;
 		if (
 			runtime.activeGoal?.status === "paused" &&
 			runtime.guardAbortGoalId === runtime.activeGoal.id
@@ -346,7 +352,9 @@ export function registerGoalLifecycle(
 			// context transformation aborts before the provider adapter receives the signal.
 			abortCurrentTurn(ctx);
 		}
-		if (messages.length !== event.messages.length) return { messages };
+		if (messages !== keptMessages || keptMessages.length !== event.messages.length) {
+			return { messages: messages as typeof event.messages };
+		}
 	});
 
 	pi.on("tool_call", (event, ctx) => {
@@ -465,10 +473,6 @@ export function registerGoalLifecycle(
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
 		}
-
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n${buildGoalSystemPrompt(runtime.activeGoal)}`,
-		};
 	});
 
 	pi.on("agent_start", (_event, _ctx) => {

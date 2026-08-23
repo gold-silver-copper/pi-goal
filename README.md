@@ -14,6 +14,7 @@ Goal mode adds explicit completion, blocker, and external-wait tools so managed 
 - Tracks active, paused, blocked, usage-limited, budget-limited, waiting, and complete outcomes separately.
 - Pauses after a configurable response limit or repeated no-progress runs and offers a guided review before continuing.
 - Supports optional token budgets that stop Goal-owned work immediately when exhausted.
+- Keeps Goal continuation accounting out of the leading system instructions so post-activation provider request prefixes remain stable.
 - Persists the goal in the current session across reload, resume, compatible forks, and compaction.
 - Rejects stale continuations and tool calls after replacement, pause, completion, limits, or other terminal state changes.
 - Optionally exposes a default-off run protocol for trusted sibling extensions to start, observe, and cancel one Goal lifecycle.
@@ -289,9 +290,15 @@ Legacy session entries are migrated by preserving their accumulated seconds and 
 
 ## ✅ How completion works
 
-While a goal is active, `pi-goal` injects persistence rules, a `<goal_id>` stale-turn guard, and exposes `goal_complete`.
-Kickoff, resume, edited-objective, system, and automatic-continuation prompts all place a trust boundary before the escaped objective, identifying it as user-provided task data; they preserve its full scope across turns and require the agent to derive concrete requirements from the objective and referenced artifacts.
+While a goal is active, Goal-owned messages carry persistence rules and a `<goal_id>` stale-turn guard, and pi-goal exposes `goal_complete`.
+Kickoff, resume, edited-objective, wait-resume, and automatic-continuation prompts all place a trust boundary before the escaped objective, identifying it as user-provided task data; they preserve its full scope across turns and require the agent to derive concrete requirements from the objective and referenced artifacts.
 They treat the current worktree, command output, tests, runtime behavior, PR state, rendered artifacts, and external state as authoritative; previous conversation and plans are context rather than proof.
+
+With the default `toolVisibility: "after-first-goal"`, the first accepted Goal activation intentionally reveals the three Goal tools and changes the tool-definition prefix once.
+After that activation boundary, pi-goal does not change the base system instructions or ordered active tools merely for continuation, token accounting, or wait resume.
+Current token-budget usage is carried by the newly appended Goal prompt instead of rewriting leading system instructions.
+After compaction replaces the original handoff, one deterministic hidden Goal contract follows the leading summary and excludes mutable token, iteration, and elapsed-time counters.
+These structural guarantees make provider prefix reuse possible, but the provider still decides cache eligibility, cache hits, pricing, and billing.
 
 Before completion, the shared audit tells the agent to treat completion as unproven, inspect requirement-by-requirement evidence for every named artifact, command, test, gate, invariant, and deliverable, and match each check's scope to the requirement it supports.
 Weak, indirect, missing, or merely consistent evidence means work must continue.
@@ -482,6 +489,7 @@ packages/pi-goal/
 │   ├── commands.ts   # Per-factory user-command controller
 │   ├── tools.ts      # Goal completion and blocker tool adapters
 │   ├── lifecycle.ts  # Pi session, agent, tool, and compaction event adapter
+│   ├── goal-contract.ts # Deterministic post-compaction model contract
 │   ├── runtime.ts    # Per-factory Goal state, transitions, prompts, and budgets
 │   ├── tool-policy.ts # Goal tool visibility ownership and rollback
 │   ├── safety.ts     # Output normalization and no-progress fingerprint state

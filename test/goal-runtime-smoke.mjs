@@ -175,8 +175,11 @@ async function createHarness(
 }
 
 function completionResponse(context) {
-	const goalId = /<goal_id>\s*([^<\s]+)\s*<\/goal_id>/.exec(context.systemPrompt ?? "")?.[1];
-	assert.ok(goalId, "expected goal id in continuation system prompt");
+	const modelContext = [context.systemPrompt ?? "", ...context.messages.map(modelMessageText)].join(
+		"\n",
+	);
+	const goalId = [...modelContext.matchAll(/<goal_id>\s*([^<\s]+)\s*<\/goal_id>/g)].at(-1)?.[1];
+	assert.ok(goalId, "expected goal id in appended Goal context");
 	return fauxAssistantMessage(
 		fauxToolCall("goal_complete", {
 			goal_id: goalId,
@@ -185,14 +188,17 @@ function completionResponse(context) {
 	);
 }
 
-function userMessageText(message) {
-	if (message.role !== "user") return "";
+function modelMessageText(message) {
 	if (typeof message.content === "string") return message.content;
 	if (!Array.isArray(message.content)) return "";
 	return message.content
 		.filter((part) => part?.type === "text")
 		.map((part) => part.text)
 		.join("\n");
+}
+
+function userMessageText(message) {
+	return message.role === "user" ? modelMessageText(message) : "";
 }
 
 async function agentDirectoryIsolationScenario() {
