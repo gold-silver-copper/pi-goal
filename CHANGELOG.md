@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.53.1
+
+### Patch Changes
+
+- 4098679: Keep token-budget accounting out of leading system instructions and preserve the post-activation provider request prefix across Goal continuation and wait resume.
+
 ## 0.53.0
 
 ### Minor Changes
