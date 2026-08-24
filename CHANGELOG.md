@@ -1,5 +1,13 @@
 # @narumitw/pi-goal
 
+## 0.53.2
+
+### Patch Changes
+
+- 3346683: Publish generated lazy chunks at the JavaScript paths referenced by each extension runtime so deferred menus and implementations load correctly through Pi's Jiti loader.
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
 ## 0.53.1
 
 ### Patch Changes
