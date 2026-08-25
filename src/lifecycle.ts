@@ -14,7 +14,6 @@ import {
 	abortCurrentTurn,
 	blocksStaleGoalToolCalls,
 	findFinalAssistantMessage,
-	formatError,
 	type GoalRuntime,
 	incrementGoal,
 	isGoalContextOverflow,
@@ -59,7 +58,6 @@ export function registerGoalLifecycle(
 		runtime.legacyQueueState = undefined;
 		runtime.legacyExperimentalGoalsSetting = false;
 		runtime.clearTerminalDetails();
-		const previousToolVisibility = runtime.settings.toolVisibility;
 		const settingsResult = readGoalSettings(options.settingsPath);
 		const loaded = loadGoalStateFromSession(ctx);
 		runtime.settings =
@@ -96,18 +94,6 @@ export function registerGoalLifecycle(
 				return;
 			}
 			runtime.activeGoal = loaded.goal;
-			try {
-				runtime.toolPolicy.prepareSessionStart(
-					runtime.settings.toolVisibility,
-					previousToolVisibility,
-				);
-			} catch (error) {
-				notifyTerminal(
-					ctx.ui,
-					`Could not restore always-visible goal tools: ${formatError(error)}`,
-					"error",
-				);
-			}
 			if (runtime.activeGoal.safetyResetPending) {
 				// Resume/edit activation is persisted before its owned prompt starts. A
 				// reload must commit that promised reset before enforcing the old limits.
@@ -118,10 +104,7 @@ export function registerGoalLifecycle(
 			if (runtime.enforceAutomaticTurnLimit(ctx, false) || runtime.enforceNoProgressLimit(ctx)) {
 				return;
 			}
-			// On lazy restore, an earlier restrictive session-start policy still wins:
-			// reconciliation unlocks ownership without widening the active tool set.
-			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, true);
-			if (!runtime.toolPolicy.toolsAvailable()) {
+			if (!runtime.goalToolsAvailable()) {
 				runtime.pauseGoalForUnavailableTools(ctx, false);
 				return;
 			}
@@ -142,34 +125,6 @@ export function registerGoalLifecycle(
 		}
 
 		runtime.activeGoal = loaded.goal;
-		let appliedInactivePolicy = false;
-		let inactivePolicyFailed = false;
-		try {
-			appliedInactivePolicy = runtime.withTemporaryWorkflowAccess(() => {
-				runtime.toolPolicy.prepareSessionStart(
-					runtime.settings.toolVisibility,
-					previousToolVisibility,
-				);
-				runtime.toolPolicy.reconcileRestoredState(
-					runtime.settings.toolVisibility,
-					runtime.activeGoal !== undefined && runtime.legacyQueueState === undefined,
-				);
-			});
-		} catch (error) {
-			inactivePolicyFailed = true;
-			notifyTerminal(
-				ctx.ui,
-				`Could not restore always-visible goal tools: ${formatError(error)}`,
-				"error",
-			);
-		}
-		if (!appliedInactivePolicy && !inactivePolicyFailed) {
-			notifyTerminal(
-				ctx.ui,
-				"Goal tool visibility was deferred because another workflow is active in this session.",
-				"warning",
-			);
-		}
 		if (runtime.legacyQueueState) {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			notifyTerminal(ctx.ui, REMOVED_PERSISTED_QUEUE_WARNING, "warning");
@@ -437,7 +392,7 @@ export function registerGoalLifecycle(
 		runtime.persistGoal(runtime.activeGoal);
 		runtime.updateStatus(ctx, runtime.activeGoal);
 		if (runtime.limitActiveGoalForBudget(ctx, true)) return;
-		if (!runtime.toolPolicy.toolsAvailable()) runtime.pauseGoalForUnavailableTools(ctx);
+		if (!runtime.goalToolsAvailable()) runtime.pauseGoalForUnavailableTools(ctx);
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -485,7 +440,7 @@ export function registerGoalLifecycle(
 		}
 		if (ownedPromptGoalId && ownedPromptGoalId !== runtime.activeGoal?.id) {
 			runtime.beginAgentRun(ownedPromptGoalId, runOrigin);
-			if (runtime.activeGoal?.status === "active" && !runtime.toolPolicy.toolsAvailable()) {
+			if (runtime.activeGoal?.status === "active" && !runtime.goalToolsAvailable()) {
 				runtime.pauseGoalForUnavailableTools(ctx, false);
 			}
 			abortCurrentTurn(ctx);
@@ -495,7 +450,7 @@ export function registerGoalLifecycle(
 			return goalContractBoundaryResult(ctx);
 		}
 		runtime.beginAgentRun(runtime.activeGoal.id, runOrigin);
-		if (!runtime.toolPolicy.toolsAvailable()) {
+		if (!runtime.goalToolsAvailable()) {
 			runtime.pauseGoalForUnavailableTools(ctx, ownedPromptGoalId !== undefined);
 			return goalContractBoundaryResult(ctx);
 		}
@@ -567,7 +522,7 @@ export function registerGoalLifecycle(
 			if (isRetryableGoalInterruption(finalAssistant)) {
 				if (run.origin === "automatic" && runtime.enforceAutomaticTurnLimit(ctx, true)) return;
 				if (runtime.limitActiveGoalForBudget(ctx, false)) return;
-				if (!runtime.toolPolicy.toolsAvailable()) {
+				if (!runtime.goalToolsAvailable()) {
 					runtime.pauseGoalForUnavailableTools(ctx);
 					return;
 				}
@@ -595,7 +550,7 @@ export function registerGoalLifecycle(
 		runtime.clearGoalRecoveryForGoal(goalId);
 
 		if (runtime.limitActiveGoalForBudget(ctx, false)) return;
-		if (!runtime.toolPolicy.toolsAvailable()) {
+		if (!runtime.goalToolsAvailable()) {
 			runtime.pauseGoalForUnavailableTools(ctx);
 			return;
 		}

@@ -9,17 +9,15 @@ import goal from "../../src/goal.js";
 export const STALE_GOAL_TOOL_REASON =
 	"Blocked stale /goal tool call after the goal stopped or was interrupted.";
 export const GOAL_SETTINGS_DIRECTORY = mkdtempSync(join(tmpdir(), "pi-goal-test-settings-"));
-export const ALWAYS_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "always.json");
-export const LAZY_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "after-first-goal.json");
+export const DEFAULT_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "default.json");
 export const INVALID_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "invalid.json");
 export const MISSING_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "missing.json");
 export const LOW_LIMITS_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "low-limits.json");
 export const ONE_TURN_LIMIT_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "one-turn-limit.json");
 export const UNLIMITED_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "unlimited.json");
 
-writeFileSync(ALWAYS_SETTINGS_PATH, '{"toolVisibility":"always"}\n');
-writeFileSync(LAZY_SETTINGS_PATH, '{"toolVisibility":"after-first-goal"}\n');
-writeFileSync(INVALID_SETTINGS_PATH, '{"toolVisibility":"sometimes"}\n');
+writeFileSync(DEFAULT_SETTINGS_PATH, "{}\n");
+writeFileSync(INVALID_SETTINGS_PATH, '{"toolVisibility":"sometimes","rpc":{"enabled":"yes"}}\n');
 writeFileSync(
 	LOW_LIMITS_SETTINGS_PATH,
 	'{"continuationLimits":{"automaticTurns":3,"noProgressTurns":3}}\n',
@@ -39,14 +37,8 @@ export function settingsPath(name: string) {
 	return join(GOAL_SETTINGS_DIRECTORY, name);
 }
 
-export function registerGoal(
-	pi: Parameters<typeof goal>[0],
-	toolVisibility: "always" | "after-first-goal" = "always",
-) {
-	registerGoalWithSettingsPath(
-		pi,
-		toolVisibility === "always" ? ALWAYS_SETTINGS_PATH : LAZY_SETTINGS_PATH,
-	);
+export function registerGoal(pi: Parameters<typeof goal>[0]) {
+	registerGoalWithSettingsPath(pi, DEFAULT_SETTINGS_PATH);
 }
 
 export function registerGoalWithSettingsPath(
@@ -167,7 +159,6 @@ export function restoreGoalForTest(
 		lastToolFreeOutputFingerprint?: string;
 		safetyPauseCause?: "continuation_limit" | "no_progress";
 	} = {},
-	toolVisibility: "always" | "after-first-goal" = "always",
 	contextOverrides: Record<string, unknown> = {},
 ) {
 	const sessionGoal = {
@@ -186,13 +177,12 @@ export function restoreGoalForTest(
 		lastToolFreeOutputFingerprint: overrides.lastToolFreeOutputFingerprint,
 		safetyPauseCause: overrides.safetyPauseCause,
 	};
-	return restoreStoredGoalForTest(sessionGoal, [], toolVisibility, contextOverrides);
+	return restoreStoredGoalForTest(sessionGoal, [], contextOverrides);
 }
 
 export function restoreStoredGoalForTest(
 	sessionGoal: StoredGoal,
 	extraEntries: Array<Record<string, unknown>> = [],
-	toolVisibility: "always" | "after-first-goal" = "always",
 	contextOverrides: Record<string, unknown> = {},
 	settingsPath?: string,
 ) {
@@ -206,7 +196,7 @@ export function restoreStoredGoalForTest(
 	];
 	const mock = createMockPi();
 	if (settingsPath) registerGoalWithSettingsPath(mock.pi, settingsPath);
-	else registerGoal(mock.pi, toolVisibility);
+	else registerGoal(mock.pi);
 	const context = createMockContext({
 		...contextOverrides,
 		sessionManager: { getBranch: () => branch, getEntries: () => branch },
@@ -218,7 +208,7 @@ export function restoreStoredGoalForTest(
 export async function startGoalForTest(
 	overrides: Record<string, unknown> = {},
 	command = "finish",
-	settingsPath = ALWAYS_SETTINGS_PATH,
+	settingsPath = DEFAULT_SETTINGS_PATH,
 ) {
 	const mock = createMockPi();
 	registerGoalWithSettingsPath(mock.pi, settingsPath);

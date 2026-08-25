@@ -61,15 +61,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 		name: GOAL_COMPLETE_TOOL,
 		label: "Goal Complete",
 		description:
-			"Mark the active /goal as complete after all required work is done and verified, using the current goal_id stale-turn guard. Do not use for partial progress, blockers, failing, or unverified work.",
-		promptSnippet:
-			"Mark the active /goal as complete after fully finishing and verifying it, with the current goal_id",
-		promptGuidelines: [
-			"When a /goal is active, keep working until the goal is complete; do not stop with only a plan or partial progress.",
-			"Before calling goal_complete, audit the active goal requirement by requirement against the current files, command output, tests, or external state.",
-			"Pass the exact goal_id shown in the current /goal prompt; never reuse a goal_id from an older, stopped, replaced, or cleared turn.",
-			"Call goal_complete only after the requested goal is fully implemented, verified, and no known required work remains; otherwise keep working.",
-		],
+			"Mark an active /goal complete only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and every requirement is verified. Tool visibility alone does not activate Goal mode. Never call for ordinary work, partial progress, blockers, failures, or unverified work.",
 		parameters: Type.Object({
 			goal_id: Type.String({
 				minLength: 1,
@@ -188,15 +180,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 		name: GOAL_BLOCKED_TOOL,
 		label: "Goal Blocked",
 		description:
-			"Stop the active /goal only at a true impasse after the same blocker recurs for at least three consecutive goal turns, with the current goal_id and concrete evidence that user or external action is required. Do not use for ordinary clarification, uncertainty, or recoverable failures.",
-		promptSnippet:
-			"Mark the active /goal blocked only after the same blocker recurs for three consecutive goal turns",
-		promptGuidelines: [
-			"Use goal_blocked only for a true impasse after the same blocker recurs for at least three consecutive goal turns and concrete evidence shows user or external action is required.",
-			"After a blocked goal is resumed, start a fresh three-turn blocker audit before using goal_blocked again.",
-			"Do not use goal_blocked for ordinary clarification, incomplete work, uncertainty, difficult tasks, or recoverable tool/provider failures.",
-			"Pass goal_blocked the exact current goal_id; never reuse a goal_id from an older, stopped, replaced, or cleared goal turn.",
-		],
+			"Stop an active /goal only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and the same evidenced external blocker recurred for at least three consecutive Goal turns. Tool visibility alone does not activate Goal mode. Never call for ordinary clarification, uncertainty, incomplete work, or recoverable failures.",
 		parameters: Type.Object({
 			goal_id: Type.String({
 				minLength: 1,
@@ -273,16 +257,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 	const goalWaitTool = defineTool({
 		name: GOAL_WAIT_TOOL,
 		label: "Goal Wait",
-		description: `Keep the active /goal alive but quiet while an external event is expected. Call goal_wait alone after arranging a wake message, or provide resume_after_ms as a safety deadline. Requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms. Do not use it for ordinary unfinished work.`,
-		promptSnippet:
-			"Wait quietly for an external event without stopping the active /goal or starting automatic continuations",
-		promptGuidelines: [
-			"Use goal_wait only when progress depends on a later non-goal message, or when resume_after_ms provides a bounded safety wake-up rather than a polling interval.",
-			`Prefer longer waits measured in minutes to avoid busy polling; goal_wait requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms.`,
-			"Arrange the external monitor or wake source before calling goal_wait, and call goal_wait alone because parallel sibling tools can prevent immediate turn termination.",
-			"Pass the exact current goal_id so a stale turn cannot put a replacement goal into waiting.",
-			"Do not use goal_blocked for a recoverable external wait that can be resumed by a message or deadline.",
-		],
+		description: `Keep an active /goal quiet only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and progress depends on an arranged external wake event or one safety deadline. Tool visibility alone does not activate Goal mode. Call goal_wait alone. Requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms. Never call for ordinary unfinished work.`,
 		parameters: Type.Object({
 			goal_id: Type.String({
 				minLength: 1,

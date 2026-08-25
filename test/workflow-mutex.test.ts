@@ -5,17 +5,14 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import goal from "../src/goal.js";
-import { GoalRuntime } from "../src/runtime.js";
-import { DEFAULT_GOAL_SETTINGS } from "../src/settings.js";
-import { applyGoalSettings } from "../src/settings-ui.js";
 import {
 	AGENT_WORKFLOW_GROUP,
 	WORKFLOW_MUTEX_CHANNEL,
 	WorkflowMutex,
 } from "../src/workflow-mutex.js";
 import {
-	ALWAYS_SETTINGS_PATH,
 	assistantUsageEntry,
+	DEFAULT_SETTINGS_PATH,
 	lastGoalStatus,
 	registerGoalWithSettingsPath,
 	requireGoalTool,
@@ -176,7 +173,7 @@ test("busy direct start and resume preserve Goal state in every command mode", a
 			activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
 		});
 		blockAgentWorkflow(mock, sessionManager);
-		registerGoalWithSettingsPath(mock.pi, ALWAYS_SETTINGS_PATH);
+		registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
 		const context = createMockContext({
 			mode,
 			hasUI: mode === "tui" || mode === "rpc",
@@ -232,7 +229,7 @@ test("busy active restore pauses safely without widening tools or scheduling wor
 		setActiveTools(tools);
 	};
 	blockAgentWorkflow(mock, sessionManager);
-	goal(mock.pi, { settingsPath: ALWAYS_SETTINGS_PATH });
+	goal(mock.pi, { settingsPath: DEFAULT_SETTINGS_PATH });
 	const context = createMockContext({ mode: "tui", hasUI: true, sessionManager });
 
 	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
@@ -245,68 +242,11 @@ test("busy active restore pauses safely without widening tools or scheduling wor
 	assert.equal(mock.sentUserMessages.length, 0);
 });
 
-test("busy inactive visibility change preserves settings, hidden tools, and active tools", () => {
-	const sessionManager = {};
-	const mock = createMockPi({
-		activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
-	});
-	const unblock = blockAgentWorkflow(mock, sessionManager);
-	const runtime = new GoalRuntime(mock.pi);
-	runtime.bindWorkflowSession(sessionManager);
-	runtime.toolPolicy.hideIfLocked();
-	let activeToolWrites = 0;
-	const setActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
-	mock.rawPi.setActiveTools = (tools) => {
-		activeToolWrites += 1;
-		setActiveTools(tools);
-	};
-	const context = createMockContext({
-		mode: "tui",
-		hasUI: true,
-		isIdle: () => true,
-		sessionManager,
-	});
-	const beforeTools = mock.rawPi.getActiveTools();
-	const beforeSettings = structuredClone(runtime.settings);
-	let saves = 0;
-
-	assert.throws(
-		() =>
-			applyGoalSettings(
-				runtime,
-				{ ...structuredClone(DEFAULT_GOAL_SETTINGS), toolVisibility: "always" },
-				context.ctx,
-				{ save: () => saves++ },
-			),
-		/Another workflow is active/u,
-	);
-	assert.deepEqual(runtime.settings, beforeSettings);
-	assert.deepEqual(mock.rawPi.getActiveTools(), beforeTools);
-	assert.equal(runtime.toolPolicy.hasHiddenTools(), true);
-	assert.equal(activeToolWrites, 0);
-	assert.equal(saves, 0);
-
-	unblock();
-	assert.equal(runtime.acquireWorkflow(sessionManager), true);
-	runtime.toolPolicy.prepareActivation("always", context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), [
-		"read",
-		"goal_complete",
-		"goal_blocked",
-		"goal_wait",
-	]);
-	runtime.releaseWorkflow();
-});
-
 test("busy managed-run RPC emits one anonymous terminal activation error", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-goal-mutex-rpc-"));
 	try {
 		const settingsPath = join(root, "pi-goal.json");
-		await writeFile(
-			settingsPath,
-			JSON.stringify({ toolVisibility: "always", rpc: { enabled: true } }),
-			"utf8",
-		);
+		await writeFile(settingsPath, JSON.stringify({ rpc: { enabled: true } }), "utf8");
 		const sessionManager = { getBranch: () => [], getEntries: () => [] };
 		const mock = createMockPi({
 			activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],

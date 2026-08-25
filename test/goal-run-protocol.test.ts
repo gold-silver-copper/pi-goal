@@ -14,8 +14,8 @@ const ENABLED_SETTINGS_PATH = join(SETTINGS_DIRECTORY, "enabled.json");
 const DISABLED_SETTINGS_PATH = join(SETTINGS_DIRECTORY, "disabled.json");
 const INVALID_SETTINGS_PATH = join(SETTINGS_DIRECTORY, "invalid.json");
 const MISSING_SETTINGS_PATH = join(SETTINGS_DIRECTORY, "missing.json");
-writeFileSync(ENABLED_SETTINGS_PATH, '{"toolVisibility":"always","rpc":{"enabled":true}}\n');
-writeFileSync(DISABLED_SETTINGS_PATH, '{"toolVisibility":"always","rpc":{"enabled":false}}\n');
+writeFileSync(ENABLED_SETTINGS_PATH, '{"rpc":{"enabled":true}}\n');
+writeFileSync(DISABLED_SETTINGS_PATH, '{"rpc":{"enabled":false}}\n');
 writeFileSync(INVALID_SETTINGS_PATH, '{"rpc":{"enabled":"yes"}}\n');
 afterAll(() => rmSync(SETTINGS_DIRECTORY, { recursive: true, force: true }));
 
@@ -788,7 +788,7 @@ test("run event listener failures do not interrupt persistence or sibling listen
 
 test("disabling RPC rejects new starts while the accepted run can drain", async () => {
 	const settingsPath = join(SETTINGS_DIRECTORY, "draining.json");
-	writeFileSync(settingsPath, '{"toolVisibility":"always","rpc":{"enabled":true}}\n');
+	writeFileSync(settingsPath, '{"rpc":{"enabled":true}}\n');
 	const mock = createMockPi({ activeTools: ["read", "bash"] });
 	registerGoal(mock, settingsPath);
 	bindSession(mock);

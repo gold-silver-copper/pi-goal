@@ -4,11 +4,10 @@ import { test } from "vitest";
 import { builtinTool, createMockContext, createMockPi } from "../../../test/support.js";
 import { createGoalContextContract } from "../src/goal-contract.js";
 import {
-	ALWAYS_SETTINGS_PATH,
 	assertHardenedGoalPrompt,
 	assertPromptHasGoalId,
 	assistantUsageEntry,
-	LAZY_SETTINGS_PATH,
+	DEFAULT_SETTINGS_PATH,
 	registerGoalWithSettingsPath,
 	requireGoalTool,
 	requireLastGoal,
@@ -122,67 +121,61 @@ function restoredGoalContract(mock: ReturnType<typeof createMockPi>) {
 	return latestGoalContract(mock.sentMessages.map((sent) => sent.message));
 }
 
-test.each([
-	{ settingsPath: ALWAYS_SETTINGS_PATH, visibility: "always", changesTools: false },
-	{ settingsPath: LAZY_SETTINGS_PATH, visibility: "after-first-goal", changesTools: true },
-])(
-	"$visibility activation appends the Goal contract at the accepted handoff boundary",
-	async ({ settingsPath, changesTools }) => {
-		const allTools = [builtinTool("read"), builtinTool("bash")];
-		const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
-		registerGoalWithSettingsPath(mock.pi, settingsPath);
-		const context = createMockContext();
-		await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
-		const retainedHistory = [
-			userMessage("Retained request before Goal activation"),
-			assistantMessage("Retained response before Goal activation"),
-		];
-		const beforeGoal = await captureRequest(
-			mock,
-			context.ctx,
-			"Retained request before Goal activation",
-			retainedHistory,
-		);
+test("Goal activation appends its contract without changing the stable tool schema", async () => {
+	const allTools = [builtinTool("read"), builtinTool("bash")];
+	const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
+	registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
+	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+	const retainedHistory = [
+		userMessage("Retained request before Goal activation"),
+		assistantMessage("Retained response before Goal activation"),
+	];
+	const beforeGoal = await captureRequest(
+		mock,
+		context.ctx,
+		"Retained request before Goal activation",
+		retainedHistory,
+	);
 
-		await mock.commands.get("goal")?.handler("preserve retained provider history", context.ctx);
-		const kickoffPrompt = mock.sentUserMessages.at(-1)?.text ?? "";
-		const kickoff = await captureRequest(mock, context.ctx, kickoffPrompt, [
-			...retainedHistory,
-			userMessage(kickoffPrompt),
-		]);
-		const contract = latestGoalContract(kickoff.messages);
+	await mock.commands.get("goal")?.handler("preserve retained provider history", context.ctx);
+	const kickoffPrompt = mock.sentUserMessages.at(-1)?.text ?? "";
+	const kickoff = await captureRequest(mock, context.ctx, kickoffPrompt, [
+		...retainedHistory,
+		userMessage(kickoffPrompt),
+	]);
+	const contract = latestGoalContract(kickoff.messages);
 
-		assert.deepEqual(
-			kickoff.serializedInput.slice(0, beforeGoal.serializedInput.length),
-			beforeGoal.serializedInput,
-		);
-		const beforeProviderRequest = await serializeProviderRequest(beforeGoal);
-		const kickoffProviderRequest = await serializeProviderRequest(kickoff);
-		const beforeProviderInput = beforeProviderRequest.input as unknown[];
-		const kickoffProviderInput = kickoffProviderRequest.input as unknown[];
-		assert.deepEqual(
-			kickoffProviderInput.slice(0, beforeProviderInput.length),
-			beforeProviderInput,
-		);
-		assert.equal(kickoff.messages[retainedHistory.length + 1], contract);
-		assert.equal(kickoff.activeTools.length !== beforeGoal.activeTools.length, changesTools);
-		assert.equal(
-			JSON.stringify(kickoffProviderRequest.tools) !== JSON.stringify(beforeProviderRequest.tools),
-			changesTools,
-		);
-	},
-);
+	assert.deepEqual(
+		kickoff.serializedInput.slice(0, beforeGoal.serializedInput.length),
+		beforeGoal.serializedInput,
+	);
+	const beforeProviderRequest = await serializeProviderRequest(beforeGoal);
+	const kickoffProviderRequest = await serializeProviderRequest(kickoff);
+	const beforeProviderInput = beforeProviderRequest.input as unknown[];
+	const kickoffProviderInput = kickoffProviderRequest.input as unknown[];
+	assert.deepEqual(kickoffProviderInput.slice(0, beforeProviderInput.length), beforeProviderInput);
+	assert.equal(kickoff.messages[retainedHistory.length + 1], contract);
+	assert.deepEqual(kickoff.activeTools, beforeGoal.activeTools);
+	assert.deepEqual(kickoffProviderRequest.tools, beforeProviderRequest.tools);
+});
 
 test("token-budgeted continuation and wait resume preserve the post-activation request prefix", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const allTools = [builtinTool("read"), builtinTool("bash")];
 	const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
-	registerGoalWithSettingsPath(mock.pi, LAZY_SETTINGS_PATH);
+	registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
 	const context = createMockContext({
 		sessionManager: { getBranch: () => branch, getEntries: () => branch },
 	});
 	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), [
+		"read",
+		"bash",
+		"goal_complete",
+		"goal_blocked",
+		"goal_wait",
+	]);
 
 	await mock.commands
 		.get("goal")
@@ -280,7 +273,7 @@ test("Goal identity rotation and clearing preserve the full serialized history",
 	const branch: Array<Record<string, unknown>> = [];
 	const allTools = [builtinTool("read"), builtinTool("bash")];
 	const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
-	registerGoalWithSettingsPath(mock.pi, ALWAYS_SETTINGS_PATH);
+	registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
 	const context = createMockContext({
 		sessionManager: { getBranch: () => branch, getEntries: () => branch },
 	});
@@ -373,7 +366,7 @@ test("Goal identity rotation and clearing preserve the full serialized history",
 test("failed Goal delivery persists no undelivered contract", async () => {
 	const allTools = [builtinTool("read"), builtinTool("bash")];
 	const fresh = createMockPi({ activeTools: ["read", "bash"], allTools });
-	registerGoalWithSettingsPath(fresh.pi, ALWAYS_SETTINGS_PATH);
+	registerGoalWithSettingsPath(fresh.pi, DEFAULT_SETTINGS_PATH);
 	const freshContext = createMockContext();
 	await fresh.events.get("session_start")?.[0]?.({ reason: "startup" }, freshContext.ctx);
 	fresh.rawPi.sendUserMessage = () => {
@@ -391,7 +384,7 @@ test("failed Goal delivery persists no undelivered contract", async () => {
 
 	const branch: Array<Record<string, unknown>> = [];
 	const edited = createMockPi({ activeTools: ["read", "bash"], allTools });
-	registerGoalWithSettingsPath(edited.pi, ALWAYS_SETTINGS_PATH);
+	registerGoalWithSettingsPath(edited.pi, DEFAULT_SETTINGS_PATH);
 	const editedContext = createMockContext({
 		sessionManager: { getBranch: () => branch, getEntries: () => branch },
 	});
@@ -539,7 +532,7 @@ test("persisting a restored waiting Goal contract does not wake the Goal", async
 test("compacted active Goal receives one cache-stable contract after summary messages", async () => {
 	const branch: Array<Record<string, unknown>> = [];
 	const mock = createMockPi();
-	registerGoalWithSettingsPath(mock.pi, LAZY_SETTINGS_PATH);
+	registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
 	const context = createMockContext({
 		sessionManager: { getBranch: () => branch, getEntries: () => branch },
 	});

@@ -13,20 +13,18 @@ import {
 
 const DEFAULT_GOAL_SETTINGS_DOCUMENT = `${JSON.stringify(DEFAULT_GOAL_SETTINGS, null, 2)}\n`;
 
-test("normalizeGoalSettings applies defaults and accepts bounded continuation limits", () => {
-	assert.equal(DEFAULT_GOAL_SETTINGS.toolVisibility, "after-first-goal");
+test("normalizeGoalSettings applies defaults and ignores retired tool visibility", () => {
+	assert.equal("toolVisibility" in DEFAULT_GOAL_SETTINGS, false);
 	assert.equal(DEFAULT_GOAL_SETTINGS.continuationLimits.automaticTurns, 25);
 	assert.deepEqual(DEFAULT_GOAL_SETTINGS.rpc, { enabled: false });
 	assert.deepEqual(normalizeGoalSettings({}), DEFAULT_GOAL_SETTINGS);
 	assert.deepEqual(normalizeGoalSettings({ futureOption: true }), DEFAULT_GOAL_SETTINGS);
-	assert.deepEqual(normalizeGoalSettings({ toolVisibility: "always" }), {
-		...DEFAULT_GOAL_SETTINGS,
-		toolVisibility: "always",
-	});
-	assert.deepEqual(normalizeGoalSettings({ toolVisibility: "after-first-goal" }), {
-		...DEFAULT_GOAL_SETTINGS,
-		toolVisibility: "after-first-goal",
-	});
+	assert.deepEqual(normalizeGoalSettings({ toolVisibility: "always" }), DEFAULT_GOAL_SETTINGS);
+	assert.deepEqual(
+		normalizeGoalSettings({ toolVisibility: "after-first-goal" }),
+		DEFAULT_GOAL_SETTINGS,
+	);
+	assert.deepEqual(normalizeGoalSettings({ toolVisibility: "sometimes" }), DEFAULT_GOAL_SETTINGS);
 	assert.deepEqual(
 		normalizeGoalSettings({ experimental: { goals: true, futureOption: "kept-compatible" } }),
 		DEFAULT_GOAL_SETTINGS,
@@ -68,7 +66,6 @@ test("normalizeGoalSettings applies defaults and accepts bounded continuation li
 		null,
 		[],
 		"always",
-		{ toolVisibility: "sometimes" },
 		{ rpc: true },
 		{ rpc: [] },
 		{ rpc: { enabled: "yes" } },
@@ -119,7 +116,6 @@ test("saveGoalSettings atomically preserves unknown top-level and nested fields"
 
 	saveGoalSettings(
 		{
-			toolVisibility: "always",
 			rpc: { enabled: false },
 			continuationLimits: { automaticTurns: 40, noProgressTurns: null },
 		},
@@ -128,7 +124,7 @@ test("saveGoalSettings atomically preserves unknown top-level and nested fields"
 
 	assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
 		future: { enabled: true },
-		toolVisibility: "always",
+		toolVisibility: "after-first-goal",
 		experimental: { goals: true, futureQueue: "keep" },
 		rpc: { enabled: false, futureRpc: "keep" },
 		continuationLimits: { automaticTurns: 40, noProgressTurns: null, futureLimit: 9 },
@@ -176,7 +172,6 @@ test("readGoalSettings distinguishes missing, loaded, legacy, malformed, and unr
 	assert.deepEqual(readGoalSettings(settingsPath), {
 		kind: "loaded",
 		settings: {
-			toolVisibility: "after-first-goal",
 			rpc: { enabled: false },
 			continuationLimits: { automaticTurns: 25, noProgressTurns: 3 },
 		},

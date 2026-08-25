@@ -76,15 +76,14 @@ export class GoalCommandController {
 			}
 		}
 
-		// Unlock lazy visibility only after final workflow admission. In always mode,
-		// a missing tool means another policy or allowlist intentionally removed it.
+		// Tool registration keeps the Goal schema stable. A missing tool means another
+		// policy or allowlist intentionally removed it, so activation must not widen it.
 		if (isRequestCurrent && !isRequestCurrent()) return;
 		const retainedOwner = this.runtime.ownsWorkflow(existingGoal);
 		if (!this.runtime.acquireWorkflow(ctx.sessionManager)) return this.reportWorkflowBusy(ctx);
 		const acquiredForRequest = !retainedOwner;
-		const goalToolVisibilityBeforeActivation = this.runtime.toolPolicy.snapshot();
 		try {
-			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+			this.runtime.assertGoalToolsAvailable();
 		} catch (error) {
 			notifyTerminal(ctx.ui, `Cannot start /goal: ${formatError(error)}`, "error");
 			if (existingGoal?.status === "active") this.runtime.pauseGoalForUnavailableTools(ctx);
@@ -168,7 +167,6 @@ export class GoalCommandController {
 				}
 			}
 			if (rolledBackStartedGoal) {
-				this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
 				if (acquiredForRequest && !this.runtime.ownsWorkflow(existingGoal)) {
 					this.runtime.releaseWorkflow();
 				}
@@ -249,9 +247,8 @@ export class GoalCommandController {
 			this.reportWorkflowBusy(ctx);
 			return;
 		}
-		const goalToolVisibilityBeforeActivation = this.runtime.toolPolicy.snapshot();
 		try {
-			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+			this.runtime.assertGoalToolsAvailable();
 		} catch (error) {
 			notifyTerminal(ctx.ui, `Cannot resume /goal: ${formatError(error)}`, "error");
 			this.runtime.releaseWorkflow();
@@ -296,7 +293,6 @@ export class GoalCommandController {
 				if (blocksStaleGoalToolCalls(this.runtime.activeGoal.status)) {
 					this.runtime.blockStaleGoalToolCalls();
 				}
-				this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
 				this.runtime.releaseWorkflow();
 			}
 			return;
@@ -323,7 +319,7 @@ export class GoalCommandController {
 			return;
 		}
 		try {
-			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+			this.runtime.assertGoalToolsAvailable();
 		} catch (error) {
 			notifyTerminal(ctx.ui, `Cannot resume /goal: ${formatError(error)}`, "error");
 			return;
@@ -404,12 +400,9 @@ export class GoalCommandController {
 			return;
 		}
 		const acquiredForEdit = intendsActive && !retainedOwner;
-		const goalToolVisibilityBeforeActivation = intendsActive
-			? this.runtime.toolPolicy.snapshot()
-			: undefined;
 		if (intendsActive) {
 			try {
-				this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+				this.runtime.assertGoalToolsAvailable();
 			} catch (error) {
 				notifyTerminal(ctx.ui, `Cannot reactivate /goal: ${formatError(error)}`, "error");
 				if (currentGoal.status === "active") this.runtime.pauseGoalForUnavailableTools(ctx);
@@ -475,9 +468,6 @@ export class GoalCommandController {
 						}
 						this.runtime.persistGoal(this.runtime.activeGoal);
 						this.runtime.updateStatus(ctx, this.runtime.activeGoal);
-					}
-					if (goalToolVisibilityBeforeActivation) {
-						this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
 					}
 					if (acquiredForEdit && previousStatus !== "active") {
 						this.runtime.releaseWorkflow();

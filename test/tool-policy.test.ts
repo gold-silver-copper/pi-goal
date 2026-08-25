@@ -1,51 +1,34 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
-import { GoalToolPolicy } from "../src/tool-policy.js";
+import { createMockPi } from "../../../test/support.js";
+import { assertGoalToolsAvailable, goalToolsAvailable } from "../src/tool-policy.js";
 
-test("tool policy hides and restores only Goal tools it owns", () => {
-	const mock = createMockPi({
-		activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
-	});
-	const policy = new GoalToolPolicy(mock.pi);
+test("Goal tool availability requires completion and blocker tools without mutating the active set", () => {
+	const mock = createMockPi({ activeTools: ["read", "goal_complete", "goal_blocked"] });
+	let activeToolWrites = 0;
+	const setActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
+	mock.rawPi.setActiveTools = (tools) => {
+		activeToolWrites += 1;
+		setActiveTools(tools);
+	};
 
-	policy.hideIfLocked();
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read"]);
-	mock.rawPi.setActiveTools(["read", "external"]);
-	policy.restoreHidden();
-
-	assert.deepEqual(mock.rawPi.getActiveTools(), [
-		"read",
-		"external",
-		"goal_complete",
-		"goal_blocked",
-		"goal_wait",
-	]);
-	assert.equal(policy.hasHiddenTools(), false);
+	assert.equal(goalToolsAvailable(mock.pi), true);
+	assert.doesNotThrow(() => assertGoalToolsAvailable(mock.pi));
+	assert.equal(activeToolWrites, 0);
+	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "goal_complete", "goal_blocked"]);
 });
 
-test("tool policy activation rollback restores exact external active-tool state", () => {
-	const mock = createMockPi({ activeTools: ["read"] });
-	const policy = new GoalToolPolicy(mock.pi);
-	const before = policy.snapshot();
-	const context = createMockContext({ isIdle: () => true });
+test("Goal tool availability rejects a restrictive policy without widening it", () => {
+	const mock = createMockPi({ activeTools: ["read", "goal_complete"] });
+	let activeToolWrites = 0;
+	const setActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
+	mock.rawPi.setActiveTools = (tools) => {
+		activeToolWrites += 1;
+		setActiveTools(tools);
+	};
 
-	policy.prepareActivation("after-first-goal", context.ctx);
-	assert.equal(policy.toolsAvailable(), true);
-	policy.restore(before);
-
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read"]);
-	assert.equal(policy.isUnlocked(), false);
-});
-
-test("tool policy refuses to widen a busy lazy activation", () => {
-	const mock = createMockPi({ activeTools: ["read"] });
-	const policy = new GoalToolPolicy(mock.pi);
-	const context = createMockContext({ isIdle: () => false });
-
-	assert.throws(
-		() => policy.prepareActivation("after-first-goal", context.ctx),
-		/wait until Pi is idle/i,
-	);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read"]);
+	assert.equal(goalToolsAvailable(mock.pi), false);
+	assert.throws(() => assertGoalToolsAvailable(mock.pi), /goal_blocked are unavailable/u);
+	assert.equal(activeToolWrites, 0);
+	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "goal_complete"]);
 });

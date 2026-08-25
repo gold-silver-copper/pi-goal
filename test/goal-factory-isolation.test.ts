@@ -14,9 +14,9 @@ import {
 	type StoredGoal,
 } from "./support/goal-fixture.js";
 
-test("parent and child goal tool unlock policies stay isolated", async () => {
+test("parent and child stable Goal tool envelopes stay isolated", async () => {
 	const root = createMockPi({ activeTools: ["read", "bash"] });
-	registerGoal(root.pi, "after-first-goal");
+	registerGoal(root.pi);
 	const rootContext = createMockContext();
 	root.events.get("session_start")?.[0]?.({}, rootContext.ctx);
 	await root.commands.get("goal")?.handler("parent objective", rootContext.ctx);
@@ -31,10 +31,16 @@ test("parent and child goal tool unlock policies stay isolated", async () => {
 	const child = createMockPi({
 		activeTools: ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"],
 	});
-	registerGoal(child.pi, "after-first-goal");
+	registerGoal(child.pi);
 	const childContext = createMockContext();
 	child.events.get("session_start")?.[0]?.({}, childContext.ctx);
-	assert.deepEqual(child.rawPi.getActiveTools(), ["read", "bash"]);
+	assert.deepEqual(child.rawPi.getActiveTools(), [
+		"read",
+		"bash",
+		"goal_complete",
+		"goal_blocked",
+		"goal_wait",
+	]);
 	assert.deepEqual(root.rawPi.getActiveTools(), [
 		"read",
 		"bash",

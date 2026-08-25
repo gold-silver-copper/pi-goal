@@ -21,6 +21,7 @@ test("declared generated entry preserves registration and partial lifecycle clea
 		const { default: extension } = await import("../dist/index.js");
 		const mock = createMockPi();
 		await extension(mock.pi);
+		mock.rawPi.setActiveTools(["goal_complete", "goal_blocked", "goal_wait"]);
 		assert.ok(mock.commands.has("goal"));
 		assert.ok(mock.events.has("session_start"));
 		assert.ok(mock.events.has("session_shutdown"));

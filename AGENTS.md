@@ -16,6 +16,6 @@
 
 - Bind goal-owned markers to the originating goal ID and add a unique nonce when iterations can repeat.
 - Restore failed-delivery state only while that prompt still owns the current goal.
-- If always-mode tool restoration fails, leave visibility unlocked while retaining the exact hidden-tool ownership set for a later retry.
+- [UNREVIEWED] Keep Goal helper schemas stable from registration onward, and reject or pause when an external active-tool policy removes required helpers instead of changing the active tool set.
 - Reject exhausted stopped goals before rotating their ID, and restore the original stopped state, ID, and stale-tool guard if `/goal resume` delivery fails.
 - When blocking a Pi `tool_call` in a bounded flow, abort the turn too because a blocked tool result does not terminate agent-core.

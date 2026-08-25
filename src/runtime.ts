@@ -36,7 +36,7 @@ import {
 	type GoalSettings,
 	type GoalSettingsLoadIssue,
 } from "./settings.js";
-import { GoalToolPolicy, type GoalToolVisibilitySnapshot } from "./tool-policy.js";
+import { assertGoalToolsAvailable, goalToolsAvailable } from "./tool-policy.js";
 import { type GoalWait, GoalWaitTimer } from "./wait.js";
 import { WorkflowMutex, type WorkflowMutexOwner } from "./workflow-mutex.js";
 
@@ -174,7 +174,6 @@ export interface GoalSettingsRuntimeSnapshot {
 	staleGoalToolCallsBlocked: boolean;
 	cancelledContinuationMarkers: Array<[string, string]>;
 	terminalDetails?: GoalTerminalDetails;
-	toolVisibility: GoalToolVisibilitySnapshot;
 }
 
 interface PendingGoalPrompt {
@@ -205,7 +204,7 @@ const CONTRADICTORY_COMPLETION_PATTERNS = [
 // and the cross-cutting invariants used by command and lifecycle orchestration.
 // Keep this state machine cohesive despite its size: prompt ownership, continuation,
 // budget, safety, external-wait, and queue transitions share ordering-sensitive invariants.
-// Tool visibility and generic wait-timer mechanics are delegated to focused collaborators.
+// Tool availability and generic wait-timer mechanics are delegated to focused collaborators.
 // Cohesion justification: Goal transitions, continuation and wait ownership, queue state, and
 // budget/retry recovery share one generation-guarded runtime; separating them further would
 // duplicate stale-turn, timer, and persistence invariants across modules.
@@ -237,7 +236,6 @@ export class GoalRuntime {
 	agentRunToolAttempted = false;
 	guardAbortGoalId?: string;
 	staleGoalToolCallsBlocked = false;
-	readonly toolPolicy: GoalToolPolicy;
 	private readonly workflowMutex: WorkflowMutex;
 	private workflowOwner?: WorkflowMutexOwner;
 	private workflowSession?: object;
@@ -255,7 +253,14 @@ export class GoalRuntime {
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
 		this.workflowMutex = new WorkflowMutex(pi);
-		this.toolPolicy = new GoalToolPolicy(pi);
+	}
+
+	goalToolsAvailable() {
+		return goalToolsAvailable(this.pi);
+	}
+
+	assertGoalToolsAvailable() {
+		assertGoalToolsAvailable(this.pi);
 	}
 
 	bindWorkflowSession(session: object) {
@@ -290,31 +295,6 @@ export class GoalRuntime {
 		const owner = this.workflowOwner;
 		this.workflowMutex.release(owner);
 		if (!this.workflowMutex.isOwner(owner)) this.workflowOwner = undefined;
-	}
-
-	beginTemporaryWorkflowAccess(session?: unknown) {
-		if (session && typeof session === "object" && this.workflowSession !== session) {
-			this.bindWorkflowSession(session);
-		}
-		const alreadyOwned = this.workflowMutex.isOwner(this.workflowOwner);
-		if (!alreadyOwned && !this.acquireWorkflow()) return undefined;
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			if (!alreadyOwned) this.releaseWorkflow();
-		};
-	}
-
-	withTemporaryWorkflowAccess(action: () => void, session?: unknown) {
-		const release = this.beginTemporaryWorkflowAccess(session);
-		if (!release) return false;
-		try {
-			action();
-			return true;
-		} finally {
-			release();
-		}
 	}
 
 	hasLegacyQueueInterface() {
@@ -434,7 +414,7 @@ export class GoalRuntime {
 			return false;
 		}
 		if (!intent) return false;
-		if (this.activeGoal?.status === "active" && !this.toolPolicy.toolsAvailable()) {
+		if (this.activeGoal?.status === "active" && !this.goalToolsAvailable()) {
 			this.pauseGoalForUnavailableTools(ctx);
 			return false;
 		}
@@ -1266,8 +1246,6 @@ export class GoalRuntime {
 		this.ensureInactiveGoalContextContract(ctx);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		if (releaseWorkflow) this.releaseWorkflow();
-		// Do not relock toolPolicy: after first activation, keep tools visible for the
-		// rest of this extension runtime to avoid repeated tool-schema churn.
 	}
 
 	snapshotSettingsApplicationState(): GoalSettingsRuntimeSnapshot {
@@ -1288,7 +1266,6 @@ export class GoalRuntime {
 			staleGoalToolCallsBlocked: this.staleGoalToolCallsBlocked,
 			cancelledContinuationMarkers: [...this.cancelledContinuationMarkers],
 			terminalDetails: this.terminalDetails ? structuredClone(this.terminalDetails) : undefined,
-			toolVisibility: this.toolPolicy.snapshot(),
 		};
 	}
 
@@ -1316,7 +1293,6 @@ export class GoalRuntime {
 		this.terminalDetails = snapshot.terminalDetails
 			? structuredClone(snapshot.terminalDetails)
 			: undefined;
-		this.toolPolicy.restore(snapshot.toolVisibility);
 	}
 
 	pauseGoalForUnavailableTools(ctx: StatusContext, abortTurn = true, recordUsage = true) {

@@ -13,18 +13,8 @@ initTheme("dark", false);
 
 function runtime() {
 	const mock = createMockPi({ activeTools: ["read"] });
-	const state = new GoalRuntime(mock.pi) as GoalRuntime & {
-		readonly visibility: ReturnType<GoalRuntime["toolPolicy"]["snapshot"]>;
-	};
+	const state = new GoalRuntime(mock.pi);
 	state.settings = structuredClone(DEFAULT_GOAL_SETTINGS);
-	state.toolPolicy.restore({
-		activeTools: ["read"],
-		goalToolsUnlocked: false,
-		goalToolsHiddenByPolicy: ["goal_complete", "goal_blocked", "goal_wait"],
-	});
-	Object.defineProperty(state, "visibility", {
-		get: () => state.toolPolicy.snapshot(),
-	});
 	return state;
 }
 
@@ -70,12 +60,11 @@ test("applyGoalSettings saves before committing runtime settings and enforces lo
 	assert.equal(enforced, 1);
 });
 
-test("applyGoalSettings restores effective tool policy when persistence fails", () => {
+test("applyGoalSettings restores runtime settings when persistence fails", () => {
 	const state = runtime();
-	const before = structuredClone(state.visibility);
 	const next: GoalSettings = {
 		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		toolVisibility: "always",
+		rpc: { enabled: true },
 	};
 	const context = createMockContext();
 
@@ -89,63 +78,6 @@ test("applyGoalSettings restores effective tool policy when persistence fails", 
 		/disk full/,
 	);
 	assert.deepEqual(state.settings, DEFAULT_GOAL_SETTINGS);
-	assert.deepEqual(state.visibility, before);
-});
-
-test("revealing lazy Goal tools rejects a busy unrelated run", () => {
-	const state = runtime();
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		toolVisibility: "after-first-goal",
-	};
-	const before = structuredClone(state.visibility);
-	const next = { ...structuredClone(state.settings), toolVisibility: "always" as const };
-	let saves = 0;
-	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => false });
-
-	assert.throws(
-		() =>
-			applyGoalSettings(state, next, context.ctx, {
-				save() {
-					saves++;
-				},
-			}),
-		/wait for Pi to become idle/i,
-	);
-	assert.equal(saves, 0);
-	assert.equal(state.settings.toolVisibility, "after-first-goal");
-	assert.deepEqual(state.visibility, before);
-});
-
-test("hiding always-visible Goal tools rejects a busy unrelated run", () => {
-	const mock = createMockPi({
-		activeTools: ["read", "goal_complete", "goal_blocked", "goal_wait"],
-	});
-	const state = new GoalRuntime(mock.pi);
-	state.settings = {
-		...structuredClone(DEFAULT_GOAL_SETTINGS),
-		toolVisibility: "always",
-	};
-	const before = state.toolPolicy.snapshot();
-	const next = {
-		...structuredClone(state.settings),
-		toolVisibility: "after-first-goal" as const,
-	};
-	let saves = 0;
-	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => false });
-
-	assert.throws(
-		() =>
-			applyGoalSettings(state, next, context.ctx, {
-				save() {
-					saves++;
-				},
-			}),
-		/wait for Pi to become idle/i,
-	);
-	assert.equal(saves, 0);
-	assert.equal(state.settings.toolVisibility, "always");
-	assert.deepEqual(state.toolPolicy.snapshot(), before);
 });
 
 test("lowering the no-progress limit pauses and aborts in-flight Goal work", () => {
@@ -253,7 +185,7 @@ test("replacement confirmation sanitizes terminal controls without changing goal
 	assert.equal(state.activeGoal?.text, "current\u001b]8;;bad\u0007 objective");
 });
 
-test("standard settings keep all five controls on one level", async () => {
+test("standard settings keep all three controls on one level", async () => {
 	const state = runtime();
 	let title = "";
 	let options: string[] = [];
@@ -268,12 +200,7 @@ test("standard settings keep all five controls on one level", async () => {
 	});
 	await showGoalSettings(state, context.ctx, { settingsPath: "/tmp/pi-goal.json" });
 	assert.match(title, /Pi Goal Settings/);
-	assert.deepEqual(options, [
-		"Automatic-work limit",
-		"No-progress guard",
-		"Goal tools",
-		"Managed run RPC",
-	]);
+	assert.deepEqual(options, ["Automatic-work limit", "No-progress guard", "Managed run RPC"]);
 });
 
 test("automatic-work settings can open directly from the safety recovery flow", async () => {
@@ -610,25 +537,6 @@ test("Managed run RPC setting rolls back when save fails", async () => {
 
 	assert.equal(state.settings.rpc.enabled, false);
 	assert.match(context.notifications.at(-1)?.message ?? "", /previous value remains/i);
-});
-
-test("standard Goal tools setting saves and applies immediately", async () => {
-	const state = runtime();
-	let saved: GoalSettings | undefined;
-	const selections = ["Goal tools", undefined];
-	const context = createMockContext({
-		hasUI: true,
-		mode: "tui",
-		select: async () => selections.shift(),
-	});
-	await showGoalSettings(state, context.ctx, {
-		settingsPath: "/tmp/pi-goal.json",
-		save(settings) {
-			saved = structuredClone(settings);
-		},
-	});
-	assert.equal(saved?.toolVisibility, "always");
-	assert.equal(state.settings.toolVisibility, "always");
 });
 
 test("invalid settings use a standard read-only detail screen", async () => {

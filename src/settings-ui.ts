@@ -19,8 +19,6 @@ interface GoalSettingsApplyOptions {
 	save?: (settings: GoalSettings) => void;
 }
 
-class WorkflowBusyError extends Error {}
-
 type LimitField = "automaticTurns" | "noProgressTurns";
 type LimitSelection = "unlimited" | "default" | "custom" | "off";
 export async function showGoalSettings(
@@ -50,7 +48,6 @@ export async function showGoalSettings(
 		| "open-no-progress"
 		| "choose-automatic"
 		| "choose-no-progress"
-		| "set-visibility"
 		| "set-rpc";
 	const menu = defineMenu<undefined, Screen, Action, ExtensionCommandContext>({
 		start: invalid ? "invalid" : (options.initialScreen ?? "settings"),
@@ -79,14 +76,6 @@ export async function showGoalSettings(
 						action: "open-no-progress",
 					},
 					{
-						id: "toolVisibility",
-						label: "Goal tools",
-						description: "Keep terminal Goal tools visible, or reveal them after the first goal.",
-						currentValue: visibilityLabel(runtime.settings.toolVisibility),
-						values: ["Always", "After first goal"],
-						action: "set-visibility",
-					},
-					{
 						id: "rpcEnabled",
 						label: "Managed run RPC",
 						description:
@@ -106,7 +95,6 @@ export async function showGoalSettings(
 					`Invalid settings file. Pi-goal is using built-in defaults. Fix ${safeTerminalText(settingsPath)} and run /reload. The file will not be overwritten.`,
 					`Automatic-work limit: ${formatAutomaticWork(runtime.settings.continuationLimits.automaticTurns)}`,
 					`No-progress guard: ${formatNoProgressProtection(runtime.settings.continuationLimits.noProgressTurns)}`,
-					`Goal tools: ${visibilityLabel(runtime.settings.toolVisibility)}`,
 					`Managed run RPC: ${runtime.settings.rpc.enabled ? "On" : "Off"}`,
 				],
 				hint: "back",
@@ -143,24 +131,6 @@ export async function showGoalSettings(
 					previewGoalIds.get("noProgressTurns") ?? null,
 					isMenuCurrent,
 				),
-			"set-visibility": async ({ value }) => {
-				const nextVisibility = value === "Always" ? "always" : "after-first-goal";
-				if (nextVisibility === runtime.settings.toolVisibility) return { kind: "stay" };
-				try {
-					const next = {
-						...structuredClone(runtime.settings),
-						toolVisibility: nextVisibility,
-					} satisfies GoalSettings;
-					applyGoalSettings(runtime, next, ctx, {
-						save: (settings) => (options.save ?? saveGoalSettings)(settings, settingsPath),
-					});
-					notifyTerminal(ctx.ui, `Goal tools: ${value}.`, "info");
-					return { kind: "stay" };
-				} catch (error) {
-					notifySettingsFailure(ctx, settingsPath, error);
-					return { kind: "rejected" };
-				}
-			},
 			"set-rpc": async ({ value }) => {
 				const enabled = value === "On";
 				if (enabled === runtime.settings.rpc.enabled) return { kind: "stay" };
@@ -326,59 +296,44 @@ export function applyGoalSettings(
 	options: GoalSettingsApplyOptions = {},
 ) {
 	const snapshot = runtime.snapshotSettingsApplicationState();
-	const visibilityChanges = snapshot.settings.toolVisibility !== next.toolVisibility;
-	const releaseWorkflow = visibilityChanges
-		? runtime.beginTemporaryWorkflowAccess(ctx.sessionManager)
-		: () => undefined;
-	if (!releaseWorkflow) {
-		throw new WorkflowBusyError(
-			"Another workflow is active in this session. Goal tool visibility was not changed.",
-		);
-	}
-
 	let fileSaved = false;
 	try {
+		runtime.settings = structuredClone(next);
+		options.save?.(next);
+		fileSaved = options.save !== undefined;
+		const activeGoalId = runtime.activeGoal?.id;
+		const abortOwnedRun = activeGoalId !== undefined && runtime.agentRunGoalId === activeGoalId;
+		const pausedByAutomaticLimit = runtime.enforceAutomaticTurnLimit(ctx, abortOwnedRun);
+		if (!pausedByAutomaticLimit) runtime.enforceNoProgressLimit(ctx, abortOwnedRun);
+		if (runtime.activeGoal) {
+			runtime.updateStatus(ctx, runtime.activeGoal);
+		}
+	} catch (error) {
+		const rollbackErrors: unknown[] = [];
 		try {
-			applyToolVisibility(runtime, snapshot.settings, next, ctx);
-			runtime.settings = structuredClone(next);
-			options.save?.(next);
-			fileSaved = options.save !== undefined;
-			const activeGoalId = runtime.activeGoal?.id;
-			const abortOwnedRun = activeGoalId !== undefined && runtime.agentRunGoalId === activeGoalId;
-			const pausedByAutomaticLimit = runtime.enforceAutomaticTurnLimit(ctx, abortOwnedRun);
-			if (!pausedByAutomaticLimit) runtime.enforceNoProgressLimit(ctx, abortOwnedRun);
-			if (runtime.activeGoal) {
-				runtime.updateStatus(ctx, runtime.activeGoal);
-			}
-		} catch (error) {
-			const rollbackErrors: unknown[] = [];
+			runtime.restoreSettingsApplicationState(snapshot);
+		} catch (rollbackError) {
+			rollbackErrors.push(rollbackError);
+		}
+		if (fileSaved) {
 			try {
-				runtime.restoreSettingsApplicationState(snapshot);
+				options.save?.(snapshot.settings);
 			} catch (rollbackError) {
 				rollbackErrors.push(rollbackError);
 			}
-			if (fileSaved) {
-				try {
-					options.save?.(snapshot.settings);
-				} catch (rollbackError) {
-					rollbackErrors.push(rollbackError);
-				}
-				try {
-					restorePersistedRuntime(runtime, ctx);
-				} catch (rollbackError) {
-					rollbackErrors.push(rollbackError);
-				}
+			try {
+				restorePersistedRuntime(runtime, ctx);
+			} catch (rollbackError) {
+				rollbackErrors.push(rollbackError);
 			}
-			if (rollbackErrors.length > 0) {
-				throw new AggregateError(
-					[error, ...rollbackErrors],
-					`pi-goal settings application failed and rollback was incomplete: ${formatError(error)}`,
-				);
-			}
-			throw error;
 		}
-	} finally {
-		releaseWorkflow();
+		if (rollbackErrors.length > 0) {
+			throw new AggregateError(
+				[error, ...rollbackErrors],
+				`pi-goal settings application failed and rollback was incomplete: ${formatError(error)}`,
+			);
+		}
+		throw error;
 	}
 }
 
@@ -428,21 +383,6 @@ async function resolveLimitSelection(
 			"warning",
 		);
 	}
-}
-
-function applyToolVisibility(
-	runtime: GoalRuntime,
-	previous: GoalSettings,
-	next: GoalSettings,
-	ctx: ExtensionCommandContext,
-) {
-	if (previous.toolVisibility === next.toolVisibility) return;
-	runtime.toolPolicy.applyVisibilityChange(
-		previous.toolVisibility,
-		next.toolVisibility,
-		runtime.activeGoal !== undefined,
-		ctx,
-	);
 }
 
 function restorePersistedRuntime(runtime: GoalRuntime, ctx: ExtensionCommandContext) {
@@ -505,10 +445,6 @@ function formatLimitSuccess(field: LimitField, value: number | null) {
 
 function isLimitSelection(value: string): value is LimitSelection {
 	return value === "unlimited" || value === "default" || value === "custom" || value === "off";
-}
-
-function visibilityLabel(value: GoalSettings["toolVisibility"]) {
-	return value === "always" ? "Always" : "After first goal";
 }
 
 function notifySettingsFailure(ctx: ExtensionCommandContext, settingsPath: string, error: unknown) {

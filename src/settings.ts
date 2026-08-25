@@ -4,13 +4,10 @@ import { basename, dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const GOAL_SETTINGS_FILE = "pi-goal.json";
-export const GOAL_TOOL_VISIBILITIES = ["always", "after-first-goal"] as const;
 
-export type GoalToolVisibility = (typeof GOAL_TOOL_VISIBILITIES)[number];
 export type ContinuationLimit = number | null;
 
 export interface GoalSettings {
-	toolVisibility: GoalToolVisibility;
 	rpc: {
 		enabled: boolean;
 	};
@@ -21,7 +18,6 @@ export interface GoalSettings {
 }
 
 export const DEFAULT_GOAL_SETTINGS: GoalSettings = {
-	toolVisibility: "after-first-goal",
 	rpc: { enabled: false },
 	continuationLimits: { automaticTurns: 25, noProgressTurns: 3 },
 };
@@ -42,10 +38,6 @@ interface GoalSettingsSaveFileSystem {
 
 export function normalizeGoalSettings(value: unknown): GoalSettings | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const toolVisibility = Object.hasOwn(value, "toolVisibility")
-		? Reflect.get(value, "toolVisibility")
-		: DEFAULT_GOAL_SETTINGS.toolVisibility;
-	if (!GOAL_TOOL_VISIBILITIES.includes(toolVisibility as GoalToolVisibility)) return undefined;
 
 	const rpcValue = Object.hasOwn(value, "rpc") ? Reflect.get(value, "rpc") : undefined;
 	if (
@@ -86,7 +78,6 @@ export function normalizeGoalSettings(value: unknown): GoalSettings | undefined 
 	if (automaticTurns === undefined || noProgressTurns === undefined) return undefined;
 
 	return {
-		toolVisibility: toolVisibility as GoalToolVisibility,
 		rpc: { enabled: rpcEnabled },
 		continuationLimits: { automaticTurns, noProgressTurns },
 	};
@@ -128,7 +119,6 @@ export function saveGoalSettings(
 	const document = `${JSON.stringify(
 		{
 			...raw,
-			toolVisibility: normalized.toolVisibility,
 			rpc: { ...rpc, enabled: normalized.rpc.enabled },
 			continuationLimits: {
 				...continuationLimits,

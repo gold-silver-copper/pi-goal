@@ -267,13 +267,7 @@ test("queued resume and active edit persist a reset that survives reload", async
 	const queuedResume = requireLastGoal(resumed.mock);
 	assert.deepEqual(pickSafetyState(queuedResume), safety);
 
-	const reloadedResume = restoreStoredGoalForTest(
-		queuedResume,
-		[],
-		"always",
-		{},
-		LOW_LIMITS_SETTINGS_PATH,
-	);
+	const reloadedResume = restoreStoredGoalForTest(queuedResume, [], {}, LOW_LIMITS_SETTINGS_PATH);
 	assert.equal(lastGoalStatus(reloadedResume.mock), "active");
 	assert.deepEqual(pickSafetyState(requireLastGoal(reloadedResume.mock)), {
 		automaticModelTurns: 0,
@@ -296,13 +290,7 @@ test("queued resume and active edit persist a reset that survives reload", async
 	const queuedEdit = requireLastGoal(edited.mock);
 	assert.deepEqual(pickSafetyState(queuedEdit), editSafety);
 
-	const reloadedEdit = restoreStoredGoalForTest(
-		queuedEdit,
-		[],
-		"always",
-		{},
-		LOW_LIMITS_SETTINGS_PATH,
-	);
+	const reloadedEdit = restoreStoredGoalForTest(queuedEdit, [], {}, LOW_LIMITS_SETTINGS_PATH);
 	assert.equal(lastGoalStatus(reloadedEdit.mock), "active");
 	assert.deepEqual(pickSafetyState(requireLastGoal(reloadedEdit.mock)), {
 		automaticModelTurns: 0,
@@ -476,9 +464,16 @@ test("resume stays stopped when another policy hides terminal tools", async () =
 	assert.match(restored.notifications.at(-1)?.message ?? "", /Cannot resume \/goal/i);
 });
 
-test("after-first-goal resume can restore tools after a restrictive mode exits", async () => {
-	const restored = restoreGoalForTest("paused", {}, "after-first-goal");
+test("resume succeeds after the restrictive policy restores terminal tools", async () => {
+	const restored = restoreGoalForTest("paused");
 	restored.mock.rawPi.setActiveTools(["read", "bash"]);
+	restored.mock.rawPi.setActiveTools([
+		"read",
+		"bash",
+		"goal_complete",
+		"goal_blocked",
+		"goal_wait",
+	]);
 
 	await restored.mock.commands.get("goal")?.handler("resume", restored.ctx);
 
