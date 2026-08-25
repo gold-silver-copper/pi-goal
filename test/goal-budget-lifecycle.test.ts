@@ -4,6 +4,7 @@ import {
 	assertPromptHasGoalId,
 	assistantUsageEntry,
 	lastGoalStatus,
+	nonGoalContractSentMessages,
 	requireGoalTool,
 	requireLastGoal,
 	STALE_GOAL_TOOL_REASON,
@@ -62,7 +63,7 @@ test("tool_execution_end stops budget work, blocks stale tools, and releases the
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
 	assert.equal(requireLastGoal(budgeted.mock).tokensUsed, 12);
 	assert.equal(budgeted.statuses.get("goal"), "budget 12/10 · automatic 0/25");
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 	await budgeted.mock.events.get("agent_settled")?.[0]?.({}, budgeted.ctx);
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);
 	assert.deepEqual(
@@ -181,7 +182,7 @@ test("budget exhaustion never queues or retries a follow-up wrap-up", async () =
 		budgeted.ctx,
 	);
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 	assert.match(budgeted.notifications.at(-1)?.message ?? "", /token budget reached/i);
 
 	await toolEnd?.(
@@ -193,7 +194,7 @@ test("budget exhaustion never queues or retries a follow-up wrap-up", async () =
 		budgeted.ctx,
 	);
 	assert.equal(attempts, 0);
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 });
 
 test("budget wrap-up permission closes at agent_end and stale context is filtered", async () => {
@@ -286,7 +287,7 @@ test("budget stop queues no custom work and remains stopped through agent_end", 
 		{ toolCallId: "tool-1", toolName: "bash", result: {}, isError: false },
 		budgeted.ctx,
 	);
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 	await budgeted.mock.events.get("agent_end")?.[0]?.(
 		{ messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
 		budgeted.ctx,
@@ -315,7 +316,7 @@ test("compaction cancels before retry when persisted usage has exhausted the bud
 	);
 	assert.deepEqual(result, { cancel: true });
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);
 
 	await budgeted.mock.events.get("session_compact")?.[0]?.(
@@ -409,7 +410,7 @@ test("budget exhaustion between agent_end and agent_settled cancels continuation
 		budgeted.ctx,
 	);
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 
 	await budgeted.mock.events.get("agent_settled")?.[0]?.({}, budgeted.ctx);
 	assert.equal(budgeted.mock.sentUserMessages.length, 1);

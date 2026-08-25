@@ -7,6 +7,7 @@ import {
 	updateGoalUsage,
 } from "./accounting.js";
 import { formatError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
+import { createGoalContextContract, hasGoalContextContract } from "./goal-contract.js";
 import {
 	appendGoalPromptMarker,
 	extractContinuationMarker,
@@ -960,6 +961,23 @@ export class GoalRuntime {
 		this.pendingNonGoalInputs = [];
 	}
 
+	ensureGoalContextContract(ctx: StatusContext, goal: ActiveGoal) {
+		const sessionManager = ctx.sessionManager as
+			| {
+					buildContextEntries?: () => unknown[];
+					getBranch?: () => unknown[];
+					getEntries?: () => unknown[];
+			  }
+			| undefined;
+		const entries =
+			sessionManager?.buildContextEntries?.() ??
+			sessionManager?.getBranch?.() ??
+			sessionManager?.getEntries?.() ??
+			[];
+		if (hasGoalContextContract(entries, goal)) return;
+		this.pi.sendMessage(createGoalContextContract(goal), { triggerTurn: false });
+	}
+
 	async sendOwnedGoalPrompt(
 		ctx: StatusContext,
 		goalId: string,
@@ -967,6 +985,8 @@ export class GoalRuntime {
 		resetSafetyEpoch = true,
 		isCurrent?: () => boolean,
 	) {
+		if (this.activeGoal?.id !== goalId || !this.ownsWorkflow(this.activeGoal)) return false;
+		this.ensureGoalContextContract(ctx, this.activeGoal);
 		if (this.activeGoal?.id !== goalId || !this.ownsWorkflow(this.activeGoal)) return false;
 		const pending = this.rememberPendingGoalPrompt(goalId, prompt, resetSafetyEpoch);
 		const sent = await sendPrompt(this.pi, ctx, pending.prompt, isCurrent);

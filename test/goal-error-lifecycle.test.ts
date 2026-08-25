@@ -10,6 +10,7 @@ import {
 	assistantUsageEntry,
 	LOW_LIMITS_SETTINGS_PATH,
 	lastGoalStatus,
+	nonGoalContractSentMessages,
 	requireGoalTool,
 	requireLastGoal,
 	restoreStoredGoalForTest,
@@ -535,7 +536,7 @@ test("an exhausted goal does not remain active for a retryable provider error", 
 	);
 
 	assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
-	assert.equal(budgeted.mock.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
 	assert.deepEqual(
 		await budgeted.mock.events.get("session_before_compact")?.[0]?.(
 			{ reason: "overflow", willRetry: true },

@@ -10,6 +10,11 @@ interface ContractMessage {
 	content?: unknown;
 }
 
+interface ContractSessionEntry extends ContractMessage {
+	type?: string;
+	message?: unknown;
+}
+
 export function createGoalContextContract(goal: GoalPromptContext) {
 	return {
 		role: "custom" as const,
@@ -22,28 +27,44 @@ export function createGoalContextContract(goal: GoalPromptContext) {
 }
 
 export function reconcileGoalContextContract(messages: unknown[], goal: GoalPromptContext) {
-	const summaryBoundary = leadingSummaryBoundary(messages);
 	const expected = createGoalContextContract(goal);
-	const contractIndexes = messages.flatMap((message, index) =>
-		unwrapMessage(message).customType === GOAL_CONTRACT_MESSAGE_TYPE ? [index] : [],
+	const matchingContractIndex = messages.findIndex(
+		(message) => goalContractContent(message) === expected.content,
 	);
-	if (
-		contractIndexes.length === 1 &&
-		contractIndexes[0] === summaryBoundary &&
-		unwrapMessage(messages[summaryBoundary]).content === expected.content
-	) {
-		return messages;
+	if (matchingContractIndex >= 0) {
+		if (messages.filter(isGoalContextContract).length === 1) return messages;
+		return messages.filter(
+			(message, index) => !isGoalContextContract(message) || index === matchingContractIndex,
+		);
 	}
 
-	const withoutContracts = messages.filter(
-		(message) => unwrapMessage(message).customType !== GOAL_CONTRACT_MESSAGE_TYPE,
-	);
-	const insertionIndex = leadingSummaryBoundary(withoutContracts);
+	const withoutContracts = removeGoalContextContracts(messages);
+	const summaryBoundary = leadingSummaryBoundary(withoutContracts);
+	const insertionIndex = summaryBoundary > 0 ? summaryBoundary : withoutContracts.length;
 	return [
 		...withoutContracts.slice(0, insertionIndex),
 		expected,
 		...withoutContracts.slice(insertionIndex),
 	];
+}
+
+export function removeGoalContextContracts(messages: unknown[]) {
+	return messages.some(isGoalContextContract)
+		? messages.filter((message) => !isGoalContextContract(message))
+		: messages;
+}
+
+export function hasGoalContextContract(entries: unknown[], goal: GoalPromptContext) {
+	const expectedContent = createGoalContextContract(goal).content;
+	return entries.some((entry) => goalContractContent(entry) === expectedContent);
+}
+
+export function isGoalContextContract(message: unknown) {
+	return unwrapMessage(message).customType === GOAL_CONTRACT_MESSAGE_TYPE;
+}
+
+function goalContractContent(message: unknown) {
+	return isGoalContextContract(message) ? unwrapMessage(message).content : undefined;
 }
 
 function leadingSummaryBoundary(messages: readonly unknown[]) {
@@ -57,6 +78,7 @@ function leadingSummaryBoundary(messages: readonly unknown[]) {
 }
 
 function unwrapMessage(message: unknown): ContractMessage {
-	const entry = message as { message?: unknown } | undefined;
+	const entry = message as ContractSessionEntry | undefined;
+	if (entry?.type === "custom_message") return entry;
 	return (entry?.message ?? message ?? {}) as ContractMessage;
 }

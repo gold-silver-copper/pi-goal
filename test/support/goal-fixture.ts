@@ -144,6 +144,12 @@ export function escapeRegExp(value: string) {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export function nonGoalContractSentMessages(mock: ReturnType<typeof createMockPi>) {
+	return mock.sentMessages.filter(
+		(sent) => (sent.message as { customType?: string }).customType !== "goal-contract",
+	);
+}
+
 export function requireGoalTool(mock: ReturnType<typeof createMockPi>, name: string) {
 	const tool = mock.tools.find((tool) => tool.name === name);
 	assert.ok(tool, `expected ${name} to be registered`);

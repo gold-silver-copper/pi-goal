@@ -296,10 +296,13 @@ Kickoff, resume, edited-objective, wait-resume, and automatic-continuation promp
 They treat the current worktree, command output, tests, runtime behavior, PR state, rendered artifacts, and external state as authoritative; previous conversation and plans are context rather than proof.
 
 With the default `toolVisibility: "after-first-goal"`, the first accepted Goal activation intentionally reveals the three Goal tools and changes the tool-definition prefix once.
-After that activation boundary, pi-goal does not change the base system instructions or ordered active tools merely for continuation, token accounting, or wait resume.
+Choosing `toolVisibility: "always"` avoids that activation-time tool change, while both visibility modes use the same Goal contract flow.
+After activation, pi-goal does not change the base system instructions or ordered active tools merely for continuation, token accounting, or wait resume.
 Current token-budget usage is carried by the newly appended Goal prompt instead of rewriting leading system instructions.
-For every active Goal, one deterministic hidden Goal contract occupies a fixed leading boundary and excludes mutable token, iteration, and elapsed-time counters.
-This contract follows leading summaries after compaction and also restores Goal instructions when persisted active state has no retained handoff.
+Each newly activated Goal persists one deterministic hidden Goal contract immediately before its Goal handoff, after previously retained conversation history.
+The matching contract stays at that history position while the same Goal remains active and excludes mutable token, iteration, and elapsed-time counters.
+Editing, replacing, stopped-state resume, completion, or clearing removes stale contracts without moving the conversation that predates the first Goal contract.
+After compaction, a missing current contract follows leading summaries, and restoring an active Goal appends a missing contract after retained history without waking a waiting Goal.
 These structural guarantees make provider prefix reuse possible, but the provider still decides cache eligibility, cache hits, pricing, and billing.
 
 Before completion, the shared audit tells the agent to treat completion as unproven, inspect requirement-by-requirement evidence for every named artifact, command, test, gate, invariant, and deliverable, and match each check's scope to the requirement it supports.

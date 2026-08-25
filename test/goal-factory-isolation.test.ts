@@ -6,6 +6,7 @@ import {
 	findPersistedGoal,
 	lastGoal,
 	lastGoalStatus,
+	nonGoalContractSentMessages,
 	registerGoal,
 	requireGoalTool,
 	requireLastGoal,
@@ -332,7 +333,7 @@ test("pending continuation and stopped budget state survive later child startup"
 	rootBranch.push(assistantUsageEntry({ totalTokens: 5 }));
 	root.events.get("tool_execution_end")?.[0]?.({}, rootContext.ctx);
 	assert.equal(lastGoalStatus(root), "budget_limited");
-	assert.equal(root.sentMessages.length, 0);
+	assert.equal(nonGoalContractSentMessages(root).length, 0);
 
 	const laterChild = createMockPi();
 	registerGoal(laterChild.pi);

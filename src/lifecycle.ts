@@ -1,7 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentTokenTotal } from "./accounting.js";
 import { notifyTerminal } from "./errors.js";
-import { reconcileGoalContextContract } from "./goal-contract.js";
+import {
+	GOAL_CONTRACT_MESSAGE_TYPE,
+	reconcileGoalContextContract,
+	removeGoalContextContracts,
+} from "./goal-contract.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
 import type { GoalRunController } from "./run-protocol.js";
 import {
@@ -121,6 +125,15 @@ export function registerGoalLifecycle(
 			}
 			runtime.persistGoal(runtime.activeGoal);
 			if (!runtime.ownsWorkflow(runtime.activeGoal)) return;
+			const restoredGoalId = runtime.activeGoal.id;
+			runtime.ensureGoalContextContract(ctx, runtime.activeGoal);
+			if (
+				runtime.activeGoal?.id !== restoredGoalId ||
+				runtime.activeGoal.status !== "active" ||
+				!runtime.ownsWorkflow(runtime.activeGoal)
+			) {
+				return;
+			}
 			runtime.updateStatus(ctx, runtime.activeGoal);
 			runtime.restoreGoalWaitTimer(ctx);
 			return;
@@ -287,6 +300,7 @@ export function registerGoalLifecycle(
 			return;
 		}
 		if (message.role === "custom") {
+			if (Reflect.get(message, "customType") === GOAL_CONTRACT_MESSAGE_TYPE) return;
 			if (runtime.isActiveBudgetWrapUpMessage(message)) return;
 			if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
 			if (runtime.guardAbortGoalId === runtime.activeGoal?.id) {
@@ -343,7 +357,7 @@ export function registerGoalLifecycle(
 		const messages =
 			runtime.activeGoal?.status === "active" && runtime.ownsWorkflow(runtime.activeGoal)
 				? reconcileGoalContextContract(keptMessages, runtime.activeGoal)
-				: keptMessages;
+				: removeGoalContextContracts(keptMessages);
 		if (
 			runtime.activeGoal?.status === "paused" &&
 			runtime.guardAbortGoalId === runtime.activeGoal.id
