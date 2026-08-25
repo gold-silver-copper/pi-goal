@@ -463,8 +463,10 @@ test("all goal prompt paths share the goal_id guard and hardened audit", async (
 	const beforeStart = started.mock.events.get("before_agent_start")?.[0]?.(
 		{ prompt: initialPrompt, systemPrompt: "base" },
 		started.ctx,
-	);
-	assert.equal(beforeStart, undefined);
+	) as { message?: { content?: string; customType?: string } } | undefined;
+	assert.equal(beforeStart?.message?.customType, "goal-contract");
+	assertPromptHasGoalId(beforeStart?.message?.content ?? "", initialGoal.id);
+	assertHardenedGoalPrompt(beforeStart?.message?.content ?? "");
 
 	await started.mock.events.get("agent_end")?.[0]?.(
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },

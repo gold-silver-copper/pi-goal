@@ -3,8 +3,9 @@ import { currentTokenTotal } from "./accounting.js";
 import { notifyTerminal } from "./errors.js";
 import {
 	GOAL_CONTRACT_MESSAGE_TYPE,
+	isGoalContextContract,
 	reconcileGoalContextContract,
-	removeGoalContextContracts,
+	reconcileInactiveGoalContextContract,
 } from "./goal-contract.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
 import type { GoalRunController } from "./run-protocol.js";
@@ -85,6 +86,7 @@ export function registerGoalLifecycle(
 			if (!runtime.acquireWorkflow()) {
 				runtime.activeGoal = transitionGoal(loaded.goal, "paused");
 				runtime.persistGoal(runtime.activeGoal);
+				runtime.ensureInactiveGoalContextContract(ctx);
 				runtime.updateStatus(ctx, runtime.activeGoal);
 				notifyTerminal(
 					ctx.ui,
@@ -175,8 +177,10 @@ export function registerGoalLifecycle(
 		}
 		if (runtime.activeGoal) {
 			runtime.persistGoal(runtime.activeGoal);
+			runtime.ensureInactiveGoalContextContract(ctx);
 			runtime.updateStatus(ctx, runtime.activeGoal);
 		} else {
+			runtime.ensureInactiveGoalContextContract(ctx);
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
 	});
@@ -239,8 +243,17 @@ export function registerGoalLifecycle(
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
 		}
-		if (!usageRecorded) return;
 		if (runtime.limitActiveGoalForBudget(ctx, false)) return;
+		const compactedGoalId = runtime.activeGoal.id;
+		runtime.ensureGoalContextContract(ctx, runtime.activeGoal);
+		if (
+			runtime.activeGoal?.id !== compactedGoalId ||
+			runtime.activeGoal.status !== "active" ||
+			!runtime.ownsWorkflow(runtime.activeGoal)
+		) {
+			return;
+		}
+		if (!usageRecorded) return;
 
 		const wasPiRetry = runtime.isPiOwnedCompactionRetry(event, runtime.activeGoal.id);
 		if (wasPiRetry) return;
@@ -354,10 +367,14 @@ export function registerGoalLifecycle(
 		const keptMessages = event.messages.filter((message) =>
 			runtime.keepBudgetWrapUpMessage(message),
 		);
+		const hasGoalContractHistory =
+			keptMessages.some(isGoalContextContract) || runtime.hasGoalContextContractHistory(ctx);
 		const messages =
 			runtime.activeGoal?.status === "active" && runtime.ownsWorkflow(runtime.activeGoal)
 				? reconcileGoalContextContract(keptMessages, runtime.activeGoal)
-				: removeGoalContextContracts(keptMessages);
+				: hasGoalContractHistory
+					? reconcileInactiveGoalContextContract(keptMessages)
+					: keptMessages;
 		if (
 			runtime.activeGoal?.status === "paused" &&
 			runtime.guardAbortGoalId === runtime.activeGoal.id
@@ -464,7 +481,7 @@ export function registerGoalLifecycle(
 				: "manual";
 		if (activeBudgetWrapUp && runtime.activeGoal) {
 			runtime.beginAgentRun(runtime.activeGoal.id, "manual");
-			return;
+			return goalContractBoundaryResult(ctx);
 		}
 		if (ownedPromptGoalId && ownedPromptGoalId !== runtime.activeGoal?.id) {
 			runtime.beginAgentRun(ownedPromptGoalId, runOrigin);
@@ -475,18 +492,19 @@ export function registerGoalLifecycle(
 			return;
 		}
 		if (runtime.activeGoal?.status !== "active" || !runtime.ownsWorkflow(runtime.activeGoal)) {
-			return;
+			return goalContractBoundaryResult(ctx);
 		}
 		runtime.beginAgentRun(runtime.activeGoal.id, runOrigin);
 		if (!runtime.toolPolicy.toolsAvailable()) {
 			runtime.pauseGoalForUnavailableTools(ctx, ownedPromptGoalId !== undefined);
-			return;
+			return goalContractBoundaryResult(ctx);
 		}
 		if (goalPrompt?.resetSafetyEpoch && goalPromptGoalId === runtime.activeGoal.id) {
 			runtime.activeGoal = resetGoalSafetyEpoch(runtime.activeGoal);
 			runtime.persistGoal(runtime.activeGoal);
 			runtime.updateStatus(ctx, runtime.activeGoal);
 		}
+		return goalContractBoundaryResult(ctx, runtime.activeGoal);
 	});
 
 	pi.on("agent_start", (_event, _ctx) => {
@@ -613,6 +631,11 @@ export function registerGoalLifecycle(
 		if (!resumedWait) runtime.dispatchContinuationIfSettled(ctx);
 		runtime.clearSettledSafetyTracking();
 	});
+
+	function goalContractBoundaryResult(ctx: StatusContext, goal?: ActiveGoal) {
+		const message = runtime.goalContextContractForPrompt(ctx, goal);
+		return message ? { message } : undefined;
+	}
 
 	function beginNonGoalFollowUp(ctx: StatusContext, resetSafetyEpoch: boolean) {
 		runtime.clearGoalRecovery();

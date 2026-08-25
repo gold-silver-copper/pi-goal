@@ -576,8 +576,8 @@ test("a later restrictive tool policy pauses the goal at agent_end without conti
 	const promptResult = mock.events.get("before_agent_start")?.[0]?.(
 		{ prompt: "continue work", systemPrompt: "base" },
 		context.ctx,
-	);
-	assert.equal(promptResult, undefined);
+	) as { message?: { customType?: string } } | undefined;
+	assert.equal(promptResult?.message?.customType, "goal-contract");
 	mock.rawPi.setActiveTools(["read", "bash"]);
 	mock.events.get("agent_end")?.[0]?.(
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },

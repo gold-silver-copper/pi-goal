@@ -299,10 +299,10 @@ With the default `toolVisibility: "after-first-goal"`, the first accepted Goal a
 Choosing `toolVisibility: "always"` avoids that activation-time tool change, while both visibility modes use the same Goal contract flow.
 After activation, pi-goal does not change the base system instructions or ordered active tools merely for continuation, token accounting, or wait resume.
 Current token-budget usage is carried by the newly appended Goal prompt instead of rewriting leading system instructions.
-Each newly activated Goal persists one deterministic hidden Goal contract immediately before its Goal handoff, after previously retained conversation history.
-The matching contract stays at that history position while the same Goal remains active and excludes mutable token, iteration, and elapsed-time counters.
-Editing, replacing, stopped-state resume, completion, or clearing removes stale contracts without moving the conversation that predates the first Goal contract.
-After compaction, a missing current contract follows leading summaries, and restoring an active Goal appends a missing contract after retained history without waking a waiting Goal.
+The first accepted handoff for each Goal identity persists one deterministic hidden Goal contract at the same agent-start boundary, after previously retained conversation history.
+The contract explicitly supersedes earlier Goal contracts, excludes mutable token, iteration, and elapsed-time counters, and stays at its appended history position.
+Editing, replacing, and stopped-state resume append a new superseding active contract without deleting earlier provider input; failed handoff delivery appends no contract.
+Completion, clearing, and stopped transitions append one inactive superseding contract, while compaction and session restore append a missing current-state contract without waking a waiting Goal.
 These structural guarantees make provider prefix reuse possible, but the provider still decides cache eligibility, cache hits, pricing, and billing.
 
 Before completion, the shared audit tells the agent to treat completion as unproven, inspect requirement-by-requirement evidence for every named artifact, command, test, gate, invariant, and deliverable, and match each check's scope to the requirement it supports.

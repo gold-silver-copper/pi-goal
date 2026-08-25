@@ -2,7 +2,13 @@ import type { GoalPromptContext } from "./prompts.js";
 import { buildGoalContextPrompt } from "./prompts.js";
 
 export const GOAL_CONTRACT_MESSAGE_TYPE = "goal-contract";
-export const GOAL_CONTRACT_VERSION = 1;
+export const GOAL_CONTRACT_VERSION = 2;
+
+const INACTIVE_GOAL_CONTRACT_CONTENT = [
+	"Goal mode is inactive.",
+	"This Goal contract supersedes every earlier goal-contract message.",
+	"Do not treat an earlier Goal objective, goal_id, Goal-mode rule, or summary of them as current unless a later Goal contract explicitly reactivates Goal mode.",
+].join("\n");
 
 interface ContractMessage {
 	role?: string;
@@ -19,52 +25,77 @@ export function createGoalContextContract(goal: GoalPromptContext) {
 	return {
 		role: "custom" as const,
 		customType: GOAL_CONTRACT_MESSAGE_TYPE,
-		content: buildGoalContextPrompt(goal),
+		content: [
+			"This Goal contract supersedes every earlier goal-contract message.",
+			"Only the objective and goal_id in this latest Goal contract are current.",
+			buildGoalContextPrompt(goal),
+		].join("\n\n"),
 		display: false,
-		details: { version: GOAL_CONTRACT_VERSION, goalId: goal.id },
+		details: { version: GOAL_CONTRACT_VERSION, state: "active", goalId: goal.id },
+		timestamp: 0,
+	};
+}
+
+export function createInactiveGoalContextContract() {
+	return {
+		role: "custom" as const,
+		customType: GOAL_CONTRACT_MESSAGE_TYPE,
+		content: INACTIVE_GOAL_CONTRACT_CONTENT,
+		display: false,
+		details: { version: GOAL_CONTRACT_VERSION, state: "inactive" },
 		timestamp: 0,
 	};
 }
 
 export function reconcileGoalContextContract(messages: unknown[], goal: GoalPromptContext) {
-	const expected = createGoalContextContract(goal);
-	const matchingContractIndex = messages.findIndex(
-		(message) => goalContractContent(message) === expected.content,
-	);
-	if (matchingContractIndex >= 0) {
-		if (messages.filter(isGoalContextContract).length === 1) return messages;
-		return messages.filter(
-			(message, index) => !isGoalContextContract(message) || index === matchingContractIndex,
-		);
-	}
-
-	const withoutContracts = removeGoalContextContracts(messages);
-	const summaryBoundary = leadingSummaryBoundary(withoutContracts);
-	const insertionIndex = summaryBoundary > 0 ? summaryBoundary : withoutContracts.length;
-	return [
-		...withoutContracts.slice(0, insertionIndex),
-		expected,
-		...withoutContracts.slice(insertionIndex),
-	];
+	return reconcileContract(messages, createGoalContextContract(goal));
 }
 
-export function removeGoalContextContracts(messages: unknown[]) {
-	return messages.some(isGoalContextContract)
-		? messages.filter((message) => !isGoalContextContract(message))
-		: messages;
+export function reconcileInactiveGoalContextContract(messages: unknown[]) {
+	return reconcileContract(messages, createInactiveGoalContextContract());
 }
 
 export function hasGoalContextContract(entries: unknown[], goal: GoalPromptContext) {
-	const expectedContent = createGoalContextContract(goal).content;
-	return entries.some((entry) => goalContractContent(entry) === expectedContent);
+	return latestGoalContractContent(entries) === createGoalContextContract(goal).content;
+}
+
+export function hasInactiveGoalContextContract(entries: unknown[]) {
+	return latestGoalContractContent(entries) === INACTIVE_GOAL_CONTRACT_CONTENT;
+}
+
+export function hasGoalContextContractHistory(entries: unknown[]) {
+	return entries.some(isGoalContextContract);
 }
 
 export function isGoalContextContract(message: unknown) {
 	return unwrapMessage(message).customType === GOAL_CONTRACT_MESSAGE_TYPE;
 }
 
-function goalContractContent(message: unknown) {
-	return isGoalContextContract(message) ? unwrapMessage(message).content : undefined;
+function reconcileContract(
+	messages: unknown[],
+	expected: {
+		role: "custom";
+		customType: string;
+		content: string;
+		display: boolean;
+		details: object;
+		timestamp: number;
+	},
+) {
+	if (latestGoalContractContent(messages) === expected.content) return messages;
+	const summaryBoundary = leadingSummaryBoundary(messages);
+	if (!hasGoalContextContractHistory(messages) && summaryBoundary > 0) {
+		return [...messages.slice(0, summaryBoundary), expected, ...messages.slice(summaryBoundary)];
+	}
+	return [...messages, expected];
+}
+
+function latestGoalContractContent(messages: readonly unknown[]) {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (isGoalContextContract(message)) return unwrapMessage(message).content;
+	}
+	return undefined;
 }
 
 function leadingSummaryBoundary(messages: readonly unknown[]) {

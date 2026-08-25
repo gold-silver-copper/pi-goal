@@ -867,8 +867,8 @@ test("queued non-goal follow-up does not inherit automatic recovery ownership", 
 	const followUpStart = active.mock.events.get("before_agent_start")?.[0]?.(
 		{ prompt: "unrelated follow-up", systemPrompt: "base" },
 		active.ctx,
-	);
-	assert.equal(followUpStart, undefined);
+	) as { message?: { customType?: string } } | undefined;
+	assert.equal(followUpStart?.message?.customType, "goal-contract");
 	active.mock.events.get("turn_end")?.[0]?.(
 		{ message: { role: "assistant", stopReason: "stop", content: [] }, toolResults: [] },
 		active.ctx,
