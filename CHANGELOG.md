@@ -1,5 +1,12 @@
 # @narumitw/pi-goal
 
+## 0.53.3
+
+### Patch Changes
+
+- 21f96d0: Keep Goals recoverable in deadline-free waiting after transient provider retries are exhausted so a later follow-up can continue, complete, or wait again with the same Goal ID.
+- 22ae047: Preserve retained conversation cache prefixes with append-only superseding Goal contracts, atomic handoff-boundary persistence, and current-state restoration after lifecycle transitions and compaction.
+
 ## 0.53.2
 
 ### Patch Changes
