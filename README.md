@@ -10,6 +10,7 @@ Goal mode adds explicit completion, blocker, and external-wait tools so managed 
 
 - Starts or manages a session goal through one `/goal` command and direct status, pause, resume, edit, or clear routes.
 - Continues exactly once from Pi's settled idle boundary after queued work, retries, and compaction have finished.
+- Waits quietly for a follow-up when transient provider retries are exhausted instead of terminally blocking the Goal.
 - Uses explicit `goal_complete`, `goal_blocked`, and `goal_wait` tools with stale-goal guards and evidence requirements.
 - Tracks active, paused, blocked, usage-limited, budget-limited, waiting, and complete outcomes separately.
 - Pauses after a configurable response limit or repeated no-progress runs and offers a guided review before continuing.
@@ -284,8 +285,8 @@ The default 25-response automatic-work limit is a response-count boundary, not a
 Pi derives displayed cost estimates from provider-reported token usage and local model pricing; pi-goal does not query a billing balance or enforce a dollar cap.
 For tighter token control, choose a smaller `automaticTurns` value and/or use `/goal --tokens`; choosing Unlimited removes only the response-count boundary.
 
-Elapsed time is accumulated only while status is `active`.
-Pause, blocked, usage-limited, budget-limited, shutdown, and offline periods do not increase it.
+Elapsed time is accumulated only while status is `active` and the Goal is not waiting.
+Waiting, paused, blocked, usage-limited, budget-limited, shutdown, and offline periods do not increase it.
 Legacy session entries are migrated by preserving their accumulated seconds and starting a fresh active clock when loaded.
 
 ## ✅ How completion works
@@ -340,7 +341,12 @@ Omitting `resume_after_ms` intentionally permits an indefinite quiet wait.
 An accepted call keeps the canonical Goal status active, checkpoints active elapsed time, cancels pending continuation work, persists the reason and absolute optional deadline, and terminates the normal single-tool run.
 Call `goal_wait` alone because Pi only guarantees early termination when every finalized result in a parallel tool batch terminates.
 
-Interactive input, RPC input, another extension's `sendUserMessage()` input, and supported non-Goal custom follow-ups clear the wait before their turn runs. pi-goal-owned kickoff, resume, edit, continuation, stale, or cancelled prompts do not count as external wake-ups.
+When Pi exhausts retries for a transient provider error such as HTTP 429, pi-goal enters the same active waiting state without a deadline instead of marking the Goal blocked.
+The warning reports bounded provider status and explains that a follow-up or `/goal resume` retries the Goal.
+Context-overflow compaction exhaustion remains blocked because another model turn can repeat the same oversized request without corrective compaction.
+
+Interactive input, RPC input, another extension's `sendUserMessage()` input, and supported non-Goal custom follow-ups clear the wait before their turn runs.
+pi-goal-owned kickoff, resume, edit, continuation, stale, or cancelled prompts do not count as external wake-ups.
 Pi does not expose the sending extension's identity, so any non-Goal extension message is treated as a wake signal.
 
 After a waking turn ends, ordinary continuation rules apply again.
@@ -354,8 +360,8 @@ An already-due deadline waits for Pi's settled, idle, no-pending-message boundar
 If that delivery throws, pi-goal restores the wait, retries once after one second, and leaves the Goal visibly waiting after a second failure instead of retry-looping.
 A deadline never sends a prompt directly from a stale timer.
 
-Waiting time is excluded from **Active elapsed**, while tokens, iteration, automatic-response count, no-progress state, managed-run ownership remain preserved.
-The managed-run protocol continues reporting `active` because waiting is non-terminal.
+Waiting time is excluded from **Active elapsed**, while tokens, iteration, automatic-response count, no-progress state, and managed-run ownership remain preserved.
+The managed-run protocol continues reporting `active` without a duplicate state event because waiting is non-terminal, including after transient provider retry exhaustion.
 Editing or replacing a waiting Goal clears the previous wait so the updated objective performs a fresh external-state check.
 
 ## 🚧 Blocked goals
@@ -375,8 +381,10 @@ A user pause or aborted turn produces `paused`; a terminal provider/account quot
 Each stopped transition cancels pending continuation intent or delivery, aborts stale work when applicable, and blocks stale tool calls until the next non-goal user prompt, successful reactivation/replacement, or `/goal clear`.
 On `/goal clear`, the extension clears goal state, continuation markers, and any stale tool-call block without aborting an unrelated in-flight turn.
 Retryable provider interruptions and overflow compaction retries stay `active` while Pi retries; no extra continuation is queued, and automatic ownership remains charged through retry `agent_start` events.
-If matching recovery still exists at `agent_settled`, retries are exhausted and the goal becomes `blocked` before any continuation dispatches.
-Stale recovery cannot block a replacement goal.
+If matching provider recovery still exists at `agent_settled`, retries are exhausted and the Goal enters a deadline-free active wait before any continuation dispatches.
+A later non-Goal input wakes the same Goal without rotating its stale-turn guard, so the model can continue, complete, or enter another wait with the current `goal_id`.
+If matching compaction recovery still exists at `agent_settled`, the Goal becomes `blocked` because recovery did not produce usable context.
+Stale recovery cannot wait or block a replacement goal.
 User and extension work that starts before settlement supersedes the older continuation intent, and pending messages always take priority.
 
 ## 🤝 Managed run RPC

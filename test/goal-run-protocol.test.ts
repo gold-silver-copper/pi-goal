@@ -571,6 +571,58 @@ test("terminal listeners cannot make stale pause work mutate a replacement", asy
 	);
 });
 
+test("provider retry exhaustion keeps a managed run active until later completion", async () => {
+	const mock = createMockPi({ activeTools: ["read", "bash"] });
+	registerGoal(mock);
+	const context = bindSession(mock);
+	const events = observeRun(mock, "provider-wait-run");
+	startRun(mock, "provider-wait-run");
+	await flush();
+	const goalId = states(events)[0]?.goalId;
+	assert.ok(goalId);
+
+	mock.events.get("agent_end")?.[0]?.(
+		{
+			messages: [
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "HTTP 429: retry shortly",
+				},
+			],
+		},
+		context.ctx,
+	);
+	await mock.events.get("agent_settled")?.[0]?.({}, context.ctx);
+	assert.deepEqual(
+		states(events).map((event) => event.status),
+		["active"],
+	);
+	assert.equal(lastPersistedGoal(mock)?.status, "active");
+
+	mock.events.get("input")?.[0]?.({ source: "interactive", text: "try again" }, context.ctx);
+	mock.events.get("before_agent_start")?.[0]?.(
+		{ prompt: "try again", systemPrompt: "base" },
+		context.ctx,
+	);
+	await requireGoalTool(mock, "goal_complete").execute(
+		"complete-provider-wait-run",
+		{
+			goal_id: goalId,
+			summary: "The managed run requirements are complete and verified.",
+		},
+		new AbortController().signal,
+		() => undefined,
+		context.ctx,
+	);
+
+	assert.deepEqual(
+		states(events).map((event) => event.status),
+		["active", "complete"],
+	);
+	assert.match(states(events).at(-1)?.summary ?? "", /complete and verified/i);
+});
+
 test("blocked and usage-limited transitions preserve terminal reasons", async () => {
 	const blockedMock = createMockPi({ activeTools: ["read", "bash"] });
 	registerGoal(blockedMock);

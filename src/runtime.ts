@@ -893,8 +893,22 @@ export class GoalRuntime {
 		if (!recovery) return false;
 		this.goalRecovery = undefined;
 		const goal = this.activeGoal;
-		if (goal?.id !== recovery.goalId || goal.status !== "active") return false;
+		if (goal?.id !== recovery.goalId || goal.status !== "active" || !this.ownsWorkflow(goal)) {
+			return false;
+		}
 		const details = recovery.errorMessage ? `: ${truncateNotification(recovery.errorMessage)}` : "";
+		if (recovery.kind === "provider_retry") {
+			const waitingGoal = this.enterGoalWait(ctx, goal.id, {
+				reason: `Provider retries exhausted${details}`,
+			});
+			if (!waitingGoal) return false;
+			notifyTerminal(
+				ctx.ui,
+				`Goal waiting after provider retries were exhausted${details}. Send a follow-up or run /goal resume to retry.`,
+				"warning",
+			);
+			return true;
+		}
 		const stoppedGoal = this.stopActiveGoal(ctx, {
 			kind: "retry_exhausted",
 			expectedGoalId: goal.id,
