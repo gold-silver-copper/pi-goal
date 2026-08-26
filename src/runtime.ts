@@ -1234,6 +1234,15 @@ export class GoalRuntime {
 	}
 
 	clearActiveGoal(ctx: StatusContext, reason = "goal cleared", releaseWorkflow = true) {
+		this.clearActiveGoalState(ctx, reason, releaseWorkflow);
+		this.ensureInactiveGoalContextContract(ctx);
+	}
+
+	clearCompletedGoal(ctx: StatusContext) {
+		this.clearActiveGoalState(ctx, "goal cleared", true);
+	}
+
+	private clearActiveGoalState(ctx: StatusContext, reason: string, releaseWorkflow: boolean) {
 		const clearedGoal = this.activeGoal;
 		this.clearGoalWaitTimer();
 		this.cancelContinuationWork();
@@ -1243,7 +1252,6 @@ export class GoalRuntime {
 		this.activeGoal = undefined;
 		this.legacyQueueState = undefined;
 		this.clearPersistedGoal(ctx.cwd, clearedGoal, reason);
-		this.ensureInactiveGoalContextContract(ctx);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		if (releaseWorkflow) this.releaseWorkflow();
 	}

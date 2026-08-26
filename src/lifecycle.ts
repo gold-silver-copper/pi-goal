@@ -483,6 +483,11 @@ export function registerGoalLifecycle(
 
 	pi.on("turn_end", (event, ctx) => {
 		runtime.recordAutomaticTurn(ctx, event.message);
+		// goal_complete clears state synchronously, but its inactive contract must wait
+		// until Pi has persisted the real tool result at this turn boundary.
+		if (runtime.activeGoal?.status !== "active") {
+			runtime.ensureInactiveGoalContextContract(ctx);
+		}
 	});
 
 	pi.on("agent_end", (event, ctx) => {

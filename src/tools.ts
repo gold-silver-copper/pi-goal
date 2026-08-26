@@ -164,7 +164,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			runtime.persistGoal(runtime.activeGoal);
 
 			ctx.ui.setStatus(STATUS_KEY, formatStatus(runtime.activeGoal));
-			runtime.clearActiveGoal(ctx);
+			runtime.clearCompletedGoal(ctx);
 			runtime.showCompletionStatus(ctx);
 			notifyTerminal(ctx.ui, `Goal complete: ${goal}`, "info");
 
