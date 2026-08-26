@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.54.2
+
+### Patch Changes
+
+- e0c0766: Persist the real `goal_blocked` result before publishing the inactive Goal contract.
+
 ## 0.54.1
 
 ### Patch Changes
