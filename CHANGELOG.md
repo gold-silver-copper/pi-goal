@@ -1,5 +1,13 @@
 # @narumitw/pi-goal
 
+## 0.54.1
+
+### Patch Changes
+
+- 35e5ee7: Persist the real `goal_complete` result before publishing the inactive Goal contract.
+- Updated dependencies [663f72a]
+  - @narumitw/pi-tui-kit@0.58.2
+
 ## 0.54.0
 
 ### Minor Changes
