@@ -682,7 +682,7 @@ export class GoalRuntime {
 		if (terminalReason !== undefined) this.setTerminalReason(this.activeGoal.id, terminalReason);
 		const stoppedGoal = this.activeGoal;
 		this.persistGoal(stoppedGoal);
-		this.ensureInactiveGoalContextContract(ctx);
+		if (request.kind !== "blocker_report") this.ensureInactiveGoalContextContract(ctx);
 		if (this.activeGoal?.id === stoppedGoal.id && this.activeGoal.status === stoppedGoal.status) {
 			this.updateStatus(ctx, stoppedGoal);
 			this.releaseWorkflow();

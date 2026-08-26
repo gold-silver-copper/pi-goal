@@ -140,6 +140,41 @@ function goalCompleteResult(toolCallId: string) {
 	};
 }
 
+function assistantBlockerToolCall(toolCallId: string, goalId: string) {
+	return {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: toolCallId,
+				name: "goal_blocked",
+				arguments: {
+					goal_id: goalId,
+					reason: "External access is required",
+					evidence: "Three consecutive turns confirmed no credential is available.",
+					repeated_turns: 3,
+				},
+			},
+		],
+		api: "openai-responses",
+		provider: "cache-contract-test",
+		model: "cache-contract-test",
+		stopReason: "toolUse",
+		timestamp: 1,
+	};
+}
+
+function goalBlockedResult(toolCallId: string) {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "goal_blocked",
+		content: [{ type: "text", text: "Goal blocked: External access is required" }],
+		isError: false,
+		timestamp: 2,
+	};
+}
+
 function latestGoalContract(messages: unknown[]) {
 	const message = messages
 		.filter((candidate) => (candidate as { customType?: string }).customType === "goal-contract")
@@ -283,6 +318,112 @@ test("goal_complete persists one real provider output before the inactive contra
 	);
 	assert.equal(outputs.length, 1);
 	assert.match(String(outputs[0]?.output), /Goal complete: Completed with verified evidence/u);
+	assert.doesNotMatch(JSON.stringify(providerInput), /No result provided/u);
+	const outputIndex = providerInput.indexOf(outputs[0] as Record<string, unknown>);
+	const inactiveIndex = providerInput.findIndex((item) =>
+		JSON.stringify(item).includes("Goal mode is inactive"),
+	);
+	assert.ok(outputIndex >= 0);
+	assert.ok(inactiveIndex > outputIndex);
+});
+
+test("goal_blocked persists one real provider output before the inactive contract", async () => {
+	const branch: Array<Record<string, unknown>> = [];
+	const allTools = [builtinTool("read"), builtinTool("bash")];
+	const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
+	registerGoalWithSettingsPath(mock.pi, DEFAULT_SETTINGS_PATH);
+	const context = createMockContext({
+		sessionManager: { getBranch: () => branch, getEntries: () => branch },
+	});
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+	await mock.commands.get("goal")?.handler("block without duplicate tool output", context.ctx);
+	const kickoffPrompt = mock.sentUserMessages.at(-1)?.text ?? "";
+	const kickoff = await captureRequest(mock, context.ctx, kickoffPrompt, [
+		userMessage(kickoffPrompt),
+	]);
+	const activeContract = latestGoalContract(kickoff.messages);
+	branch.push({
+		type: "custom_message",
+		customType: activeContract.customType,
+		content: activeContract.content,
+	});
+
+	const goal = requireLastGoal(mock);
+	const toolCallId = "goal-blocked-order";
+	const toolCall = assistantBlockerToolCall(toolCallId, goal.id);
+	const toolResult = goalBlockedResult(toolCallId);
+	const sentContractsBeforeBlocker = mock.sentMessages.length;
+	const blocker = await requireGoalTool(mock, "goal_blocked").execute(
+		toolCallId,
+		{
+			goal_id: goal.id,
+			reason: "External access is required",
+			evidence: "Three consecutive turns confirmed no credential is available.",
+			repeated_turns: 3,
+		},
+		new AbortController().signal,
+		() => undefined,
+		context.ctx,
+	);
+
+	assert.equal(blocker.terminate, true);
+	assert.equal(mock.sentMessages.length, sentContractsBeforeBlocker);
+
+	const restartedBranch = [
+		...branch,
+		...mock.entries.map((entry) => ({ type: "custom", ...entry })),
+	];
+	const restarted = createMockPi({ activeTools: ["read", "bash"], allTools });
+	registerGoalWithSettingsPath(restarted.pi, DEFAULT_SETTINGS_PATH);
+	const restartedContext = createMockContext({
+		sessionManager: {
+			getBranch: () => restartedBranch,
+			getEntries: () => restartedBranch,
+		},
+	});
+	await restarted.events.get("session_start")?.[0]?.({ reason: "reload" }, restartedContext.ctx);
+	const restartedContract = restarted.sentMessages.at(-1)?.message as
+		| { content?: string }
+		| undefined;
+	assert.match(restartedContract?.content ?? "", /Goal mode is inactive/u);
+
+	branch.push({ type: "message", message: toolCall }, { type: "message", message: toolResult });
+	await mock.events.get("turn_end")?.[0]?.(
+		{ message: toolCall, toolResults: [toolResult] },
+		context.ctx,
+	);
+	assert.equal(mock.sentMessages.length, sentContractsBeforeBlocker + 1);
+	const inactiveContract = mock.sentMessages.at(-1)?.message as {
+		content?: string;
+		customType?: string;
+	};
+	assert.match(inactiveContract.content ?? "", /Goal mode is inactive/u);
+	branch.push({
+		type: "custom_message",
+		customType: inactiveContract.customType,
+		content: inactiveContract.content,
+	});
+	await mock.events.get("turn_end")?.[0]?.(
+		{ message: toolCall, toolResults: [toolResult] },
+		context.ctx,
+	);
+	assert.equal(mock.sentMessages.length, sentContractsBeforeBlocker + 1);
+
+	const followUpPrompt = "ordinary follow-up after Goal blocker report";
+	const followUp = await captureRequest(mock, context.ctx, followUpPrompt, [
+		...kickoff.messages,
+		toolCall,
+		toolResult,
+		inactiveContract,
+		userMessage(followUpPrompt),
+	]);
+	const payload = await serializeProviderRequest(followUp);
+	const providerInput = payload.input as Array<Record<string, unknown>>;
+	const outputs = providerInput.filter(
+		(item) => item.type === "function_call_output" && item.call_id === toolCallId,
+	);
+	assert.equal(outputs.length, 1);
+	assert.match(String(outputs[0]?.output), /Goal blocked: External access is required/u);
 	assert.doesNotMatch(JSON.stringify(providerInput), /No result provided/u);
 	const outputIndex = providerInput.indexOf(outputs[0] as Record<string, unknown>);
 	const inactiveIndex = providerInput.findIndex((item) =>
