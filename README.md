@@ -4,7 +4,6 @@
 
 Give Pi one session-scoped objective and let it continue after Pi becomes fully idle.
 Goal mode stops when work completes, pauses, waits for an external event, or reaches a safety limit.
-
 Explicit completion, blocker, and wait tools give each managed run a clear stopping reason.
 
 ## ✨ Features
@@ -124,8 +123,8 @@ Settings are reread at Pi startup, session replacement, and `/reload`.
 Direct file edits are not watched, while Goal-menu changes apply immediately.
 A missing file remains absent and uses the built-in defaults.
 The first successful settings change creates the file atomically; later saves preserve unknown fields.
-
 Omitted fields use the defaults above.
+
 Invalid or malformed existing settings are never overwritten; they produce a warning and fall back to all defaults.
 In the TUI, Goal Settings becomes a read-only summary that identifies the invalid file and tells you to fix it and run `/reload`.
 
@@ -227,7 +226,6 @@ Guaranteed coexistence with Plan mode requires `@narumitw/pi-plan-mode` `0.52.0`
 The experimental ordered-goal queue has been removed.
 Use `/goal edit <objective>` to reprioritize the active objective instead.
 For example, if `task b` is complete and `task c` is in progress, edit the objective to say: `task b is complete; do task a next; after task a, continue task c, then task d; do not redo task b unless verification shows it is incomplete.`
-
 Former queue command words such as `add`, `prioritize`, `drop-last`, `skip`, `push`, `unshift`, `pop`, and `shift` are ordinary objective text for unaffected users.
 If a session still has legacy queue settings or persisted queue state, those words show a migration warning instead of replacing the active Goal.
 
