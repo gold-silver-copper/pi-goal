@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.54.4
+
+### Patch Changes
+
+- aca0c7d: Render accepted `goal_complete` summaries as sanitized Markdown in the TUI.
+
 ## 0.54.3
 
 ### Patch Changes
