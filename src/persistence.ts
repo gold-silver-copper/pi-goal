@@ -35,19 +35,21 @@ export interface ActiveGoal {
 	waiting?: GoalWait;
 }
 
+interface LegacyStoredGoal extends Omit<ActiveGoal, "status"> {
+	status: GoalStatus | "queued";
+}
+
 export interface GoalStateEntryData {
 	goal: ActiveGoal | null;
 }
 
 export interface LegacyQueueState {
-	reason: "canonical-queue" | "legacy-goals";
 	retainedGoals: number;
 }
 
 export interface LoadedGoalState {
 	goal: ActiveGoal | undefined;
 	legacyQueueState: LegacyQueueState | undefined;
-	source: "none" | "canonical" | "legacy-goals";
 }
 
 interface SessionEntry {
@@ -79,40 +81,40 @@ export function loadGoalStateFromSession(ctx: SessionContext): LoadedGoalState {
 			(entry) => entry.type === "custom" && entry.customType === LEGACY_GOALS_STATE_ENTRY_TYPE,
 		)
 		.pop();
-	return legacyEntry ? loadLegacyGoalsState(legacyEntry.data) : emptyGoalState("none");
+	return legacyEntry ? loadLegacyGoalsState(legacyEntry.data) : emptyGoalState();
 }
 
 function loadCanonicalGoalState(data: unknown): LoadedGoalState {
-	if (!isRecord(data)) return emptyGoalState("canonical");
+	if (!isRecord(data)) return emptyGoalState();
 	const rawGoal = data.goal;
-	if (rawGoal !== null && !isGoal(rawGoal)) return emptyGoalState("canonical");
+	if (rawGoal !== null && !isStoredGoal(rawGoal)) return emptyGoalState();
 	const rawQueue = Object.hasOwn(data, "queue") ? data.queue : undefined;
 	if (rawQueue !== undefined && (!Array.isArray(rawQueue) || !rawQueue.every(isQueueGoal))) {
-		return emptyGoalState("canonical");
+		return emptyGoalState();
 	}
 	const pendingAction = Object.hasOwn(data, "pendingAction")
 		? normalizeCanonicalPendingAction(data.pendingAction)
 		: undefined;
-	if (Object.hasOwn(data, "pendingAction") && !pendingAction) return emptyGoalState("canonical");
+	if (Object.hasOwn(data, "pendingAction") && !pendingAction) return emptyGoalState();
 	const hasQueueFields = rawQueue !== undefined || pendingAction !== undefined;
-	if (hasQueueFields || (isGoal(rawGoal) && rawGoal.status === "queued")) {
-		return legacyQueueState("canonical", {
-			reason: "canonical-queue",
+	if (hasQueueFields || (isStoredGoal(rawGoal) && rawGoal.status === "queued")) {
+		return legacyQueueState({
 			retainedGoals: countCanonicalLegacyGoals(rawGoal, rawQueue, pendingAction),
 		});
 	}
 
-	let goal = rawGoal === null ? undefined : normalizeLoadedGoal(rawGoal);
+	let goal =
+		rawGoal === null || !isCanonicalGoal(rawGoal) ? undefined : normalizeLoadedGoal(rawGoal);
 	if (goal?.status === "complete") goal = undefined;
-	return { goal, legacyQueueState: undefined, source: "canonical" };
+	return { goal, legacyQueueState: undefined };
 }
 
 function countCanonicalLegacyGoals(
 	goal: unknown,
-	queue: ActiveGoal[] | undefined,
+	queue: LegacyStoredGoal[] | undefined,
 	pendingAction: { kind: string } | undefined,
 ) {
-	let count = isGoal(goal) && goal.status !== "complete" ? 1 : 0;
+	let count = isStoredGoal(goal) && goal.status !== "complete" ? 1 : 0;
 	count += (queue ?? []).filter((queuedGoal) => queuedGoal.status !== "complete").length;
 	if (pendingAction?.kind === "prioritize") count += 1;
 	return count;
@@ -134,27 +136,26 @@ function normalizeCanonicalPendingAction(value: unknown): { kind: string } | und
 }
 
 function loadLegacyGoalsState(data: unknown): LoadedGoalState {
-	if (!isRecord(data)) return emptyGoalState("legacy-goals");
-	let rawGoals: ActiveGoal[];
+	if (!isRecord(data)) return emptyGoalState();
+	let rawGoals: LegacyStoredGoal[];
 	if (Array.isArray(data.goals)) {
-		if (!data.goals.every(isGoal)) return emptyGoalState("legacy-goals");
+		if (!data.goals.every(isStoredGoal)) return emptyGoalState();
 		rawGoals = data.goals.filter((goal) => goal.status !== "complete");
-	} else if (isGoal(data.goal) && data.goal.status !== "complete") {
+	} else if (isStoredGoal(data.goal) && data.goal.status !== "complete") {
 		rawGoals = [data.goal];
 	} else {
 		rawGoals = [];
 	}
 	const pendingAction = normalizeLegacyPendingPrioritize(data.pendingUnshift);
-	if (rawGoals.length === 1 && rawGoals[0]?.status !== "queued" && pendingAction === undefined) {
+	const onlyGoal = rawGoals.length === 1 ? rawGoals[0] : undefined;
+	if (onlyGoal && isCanonicalGoal(onlyGoal) && pendingAction === undefined) {
 		return {
-			goal: normalizeLoadedGoal(rawGoals[0]),
+			goal: normalizeLoadedGoal(onlyGoal),
 			legacyQueueState: undefined,
-			source: "legacy-goals",
 		};
 	}
-	if (rawGoals.length === 0 && pendingAction === undefined) return emptyGoalState("legacy-goals");
-	return legacyQueueState("legacy-goals", {
-		reason: "legacy-goals",
+	if (rawGoals.length === 0 && pendingAction === undefined) return emptyGoalState();
+	return legacyQueueState({
 		retainedGoals: rawGoals.length + (pendingAction ? 1 : 0),
 	});
 }
@@ -222,7 +223,7 @@ function readState(): Record<string, unknown> {
 	}
 }
 
-function isGoal(value: unknown): value is ActiveGoal {
+function isStoredGoal(value: unknown): value is LegacyStoredGoal {
 	if (!isRecord(value)) return false;
 	return (
 		typeof value.id === "string" &&
@@ -249,29 +250,28 @@ function isGoal(value: unknown): value is ActiveGoal {
 	);
 }
 
-function isQueueGoal(value: unknown): value is ActiveGoal {
-	return isGoal(value) && value.status !== "complete";
+function isCanonicalGoal(goal: LegacyStoredGoal): goal is ActiveGoal {
+	return goal.status !== "queued";
+}
+
+function isQueueGoal(value: unknown): value is LegacyStoredGoal {
+	return isStoredGoal(value) && value.status !== "complete";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function emptyGoalState(source: LoadedGoalState["source"]): LoadedGoalState {
+function emptyGoalState(): LoadedGoalState {
 	return {
 		goal: undefined,
 		legacyQueueState: undefined,
-		source,
 	};
 }
 
-function legacyQueueState(
-	source: LoadedGoalState["source"],
-	legacyQueue: LegacyQueueState,
-): LoadedGoalState {
+function legacyQueueState(legacyQueue: LegacyQueueState): LoadedGoalState {
 	return {
 		goal: undefined,
 		legacyQueueState: legacyQueue,
-		source,
 	};
 }

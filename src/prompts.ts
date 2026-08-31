@@ -3,7 +3,6 @@ import { MIN_GOAL_WAIT_DELAY_MS } from "./wait.js";
 
 export type GoalStatus =
 	| "active"
-	| "queued"
 	| "paused"
 	| "blocked"
 	| "usage_limited"

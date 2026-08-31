@@ -15,7 +15,7 @@ export const GOAL_RUN_CANCEL_CHANNEL = "pi-goal:cancel";
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const MAX_CANCEL_REASON_LENGTH = 1_000;
 
-export type GoalRunStatus = Exclude<GoalStateSnapshot["status"], "queued">;
+export type GoalRunStatus = GoalStateSnapshot["status"];
 export type GoalRunErrorCode =
 	| "RPC_DISABLED"
 	| "INVALID_REQUEST"
@@ -324,7 +324,7 @@ export class GoalRunController {
 			});
 			return;
 		}
-		if (snapshot.status === "queued" || run.lastStatus === snapshot.status) return;
+		if (run.lastStatus === snapshot.status) return;
 		this.publishStateEvent(run, snapshot);
 	}
 
@@ -333,7 +333,6 @@ export class GoalRunController {
 		snapshot: Pick<GoalStateSnapshot, "goalId" | "status" | "summary" | "reason">,
 	) {
 		const status = snapshot.status;
-		if (status === "queued") return;
 		run.lastStatus = status;
 		const event: GoalRunEvent = {
 			type: "state",

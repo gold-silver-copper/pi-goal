@@ -139,7 +139,7 @@ export interface GoalStateSnapshot {
 
 /** Terminal statuses for Goal persistence and managed-run lifecycle publication. */
 export function isTerminalGoalStatus(status: GoalStateSnapshotStatus): boolean {
-	return status !== "active" && status !== "queued";
+	return status !== "active";
 }
 
 function buildGoalStateSnapshot(
@@ -203,10 +203,10 @@ const CONTRADICTORY_COMPLETION_PATTERNS = [
 // One instance belongs to one extension factory. It owns all mutable session state
 // and the cross-cutting invariants used by command and lifecycle orchestration.
 // Keep this state machine cohesive despite its size: prompt ownership, continuation,
-// budget, safety, external-wait, and queue transitions share ordering-sensitive invariants.
+// budget, safety, and external-wait transitions share ordering-sensitive invariants.
 // Tool availability and generic wait-timer mechanics are delegated to focused collaborators.
-// Cohesion justification: Goal transitions, continuation and wait ownership, queue state, and
-// budget/retry recovery share one generation-guarded runtime; separating them further would
+// Cohesion justification: Goal transitions, continuation and wait ownership, and budget/retry
+// recovery share one generation-guarded runtime; separating them further would
 // duplicate stale-turn, timer, and persistence invariants across modules.
 export class GoalRuntime {
 	settings: GoalSettings = DEFAULT_GOAL_SETTINGS;
@@ -1466,7 +1466,6 @@ export function formatStatus(
 		automaticTurnLimit === null
 			? "automatic Unlimited"
 			: `automatic ${goal.automaticModelTurns}/${automaticTurnLimit}`;
-	if (goal.status === "queued") return `queued · ${automatic}`;
 	if (goal.waiting) {
 		return `waiting ${safeGoalMenuText(goal.waiting.reason)} · ${automatic}`;
 	}
@@ -1615,20 +1614,17 @@ async function sendPrompt(
 	}
 }
 
-function goalCommandHint(goal: ActiveGoal, experimentalGoals = false) {
-	const queueCommands = experimentalGoals
-		? ", /goal add <objective>, /goal prioritize <objective>, /goal drop-last, /goal skip"
-		: "";
+function goalCommandHint(goal: ActiveGoal) {
 	if (goal.waiting) {
-		return `/goal resume, /goal edit <objective>, /goal pause, /goal clear${queueCommands}`;
+		return "/goal resume, /goal edit <objective>, /goal pause, /goal clear";
 	}
 	if (goal.status === "active") {
-		return `/goal edit <objective>, /goal pause, /goal clear${queueCommands}`;
+		return "/goal edit <objective>, /goal pause, /goal clear";
 	}
 	if (isResumableGoalStatus(goal.status)) {
-		return `/goal edit <objective>, /goal resume, /goal clear${queueCommands}`;
+		return "/goal edit <objective>, /goal resume, /goal clear";
 	}
-	return `/goal edit <objective>, /goal clear${queueCommands}`;
+	return "/goal edit <objective>, /goal clear";
 }
 
 function continuationMarker(goal: ActiveGoal) {

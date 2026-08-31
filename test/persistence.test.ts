@@ -12,7 +12,7 @@ import {
 } from "../src/persistence.js";
 
 const active = storedGoal("active", "active");
-const queued = storedGoal("queued", "queued");
+const queued = { ...storedGoal("queued", "active"), status: "queued" as const };
 
 function branch(...entries: Array<{ customType: string; data: unknown }>) {
 	return {
@@ -32,7 +32,6 @@ test("canonical persistence restores ordinary single goals", () => {
 		branch({ customType: "goal-state", data: serializeGoalState(active) }),
 	);
 
-	assert.equal(loaded.source, "canonical");
 	assert.equal(loaded.goal?.text, "active");
 	assert.equal(loaded.legacyQueueState, undefined);
 });
@@ -51,12 +50,8 @@ test("canonical queue metadata is inert legacy state", () => {
 		}),
 	);
 
-	assert.equal(loaded.source, "canonical");
 	assert.equal(loaded.goal, undefined);
-	assert.deepEqual(loaded.legacyQueueState, {
-		reason: "canonical-queue",
-		retainedGoals: 3,
-	});
+	assert.deepEqual(loaded.legacyQueueState, { retainedGoals: 3 });
 });
 
 test("queued canonical heads are inert legacy queue state", () => {
@@ -65,14 +60,11 @@ test("queued canonical heads are inert legacy queue state", () => {
 	);
 
 	assert.equal(loaded.goal, undefined);
-	assert.deepEqual(loaded.legacyQueueState, {
-		reason: "canonical-queue",
-		retainedGoals: 1,
-	});
+	assert.deepEqual(loaded.legacyQueueState, { retainedGoals: 1 });
 });
 
 test("canonical entries take precedence over older plural state, including explicit clear", () => {
-	const plural = { goals: [storedGoal("legacy", "active"), storedGoal("later", "queued")] };
+	const plural = { goals: [storedGoal("legacy", "active"), queued] };
 	const loaded = loadGoalStateFromSession(
 		branch(
 			{ customType: "goals-state", data: plural },
@@ -80,7 +72,6 @@ test("canonical entries take precedence over older plural state, including expli
 		),
 	);
 
-	assert.equal(loaded.source, "canonical");
 	assert.equal(loaded.goal, undefined);
 	assert.equal(loaded.legacyQueueState, undefined);
 });
@@ -94,12 +85,8 @@ test("legacy plural state is inert unless it contains exactly one ordinary goal"
 		}),
 	);
 
-	assert.equal(loaded.source, "legacy-goals");
 	assert.equal(loaded.goal, undefined);
-	assert.deepEqual(loaded.legacyQueueState, {
-		reason: "legacy-goals",
-		retainedGoals: 3,
-	});
+	assert.deepEqual(loaded.legacyQueueState, { retainedGoals: 3 });
 });
 
 test("a legacy single goal becomes ordinary singular state", () => {
@@ -114,7 +101,6 @@ test("a legacy single goal becomes ordinary singular state", () => {
 		branch({ customType: "goals-state", data: { goals: [legacyGoal] } }),
 	);
 
-	assert.equal(loaded.source, "legacy-goals");
 	assert.equal(loaded.goal?.text, "active");
 	assert.equal(loaded.goal?.automaticModelTurns, 0);
 	assert.equal(loaded.goal?.toolFreeRepeatCount, 0);
