@@ -13,6 +13,7 @@ Explicit completion, blocker, and wait tools give each managed run a clear stopp
 - Continues exactly once from Pi's settled idle boundary after queued work, retries, and compaction have finished.
 - Waits quietly for a follow-up when transient provider retries are exhausted instead of terminally blocking the Goal.
 - Uses explicit `goal_complete`, `goal_blocked`, and `goal_wait` tools with stale-goal guards and evidence requirements.
+- Renders an accepted `goal_complete` summary as Markdown in the TUI.
 - Tracks active, paused, blocked, usage-limited, budget-limited, waiting, and complete outcomes separately.
 - Pauses after a configurable response limit or repeated no-progress runs and offers a guided review before continuing.
 - Supports optional token budgets that stop Goal-owned work immediately when exhausted.
@@ -235,7 +236,7 @@ Put longer instructions in a file and reference the file path from `/goal`.
 
 ## 🛠️ Tools
 
-- `goal_complete` records completion only for the exact active goal id and requires an evidence-based summary.
+- `goal_complete` records completion only for the exact active goal id, requires an evidence-based summary, and renders an accepted summary as Markdown in the TUI.
 - `goal_blocked` records a true repeated impasse with the exact goal id, reason, evidence, and repeated-turn count.
 - `goal_wait` pauses automatic continuation after the agent arranges an external wake source, with an optional bounded resume deadline.
 

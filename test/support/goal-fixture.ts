@@ -51,6 +51,10 @@ export function registerGoalWithSettingsPath(
 	goal(pi, { settingsPath: goalSettingsPath });
 }
 export type GoalTool = {
+	renderResult?: (
+		result: unknown,
+		options: { expanded: boolean; isPartial: boolean },
+	) => { render(width: number): string[] };
 	execute: (...args: unknown[]) => Promise<{
 		content?: Array<{ type: string; text: string }>;
 		details?: {

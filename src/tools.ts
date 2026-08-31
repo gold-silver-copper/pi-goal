@@ -3,8 +3,10 @@ import {
 	DEFAULT_MAX_LINES,
 	defineTool,
 	type ExtensionAPI,
+	getMarkdownTheme,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { Markdown } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { notifyTerminal, safeTerminalText } from "./errors.js";
 import {
@@ -76,6 +78,9 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 					"State what was completed and what evidence verified it. Do not use this tool to report partial progress, blockers, failures, or remaining work.",
 			}),
 		}),
+		renderResult(result) {
+			return renderGoalCompletion(result);
+		},
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const completedGoal = runtime.activeGoal;
 			const goal = completedGoal?.text ?? "unknown goal";
@@ -344,6 +349,36 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 	pi.registerTool(goalCompleteTool);
 	pi.registerTool(goalBlockedTool);
 	pi.registerTool(goalWaitTool);
+}
+
+interface GoalCompletionRenderResult {
+	content: Array<{ type: string; text?: string }>;
+	details?: unknown;
+}
+
+export function goalCompletionMarkdown(result: GoalCompletionRenderResult) {
+	const content = result.content
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => block.text)
+		.join("\n")
+		.trim();
+	const completionPrefix = "Goal complete:";
+	if (!content.startsWith(completionPrefix)) return content;
+
+	const details = result.details;
+	const summary =
+		details &&
+		typeof details === "object" &&
+		"summary" in details &&
+		typeof details.summary === "string"
+			? details.summary
+			: content.slice(completionPrefix.length);
+	const safeSummary = safeTerminalText(summary);
+	return safeSummary ? `**Goal complete**\n\n${safeSummary}` : "**Goal complete**";
+}
+
+export function renderGoalCompletion(result: GoalCompletionRenderResult) {
+	return new Markdown(goalCompletionMarkdown(result), 0, 0, getMarkdownTheme());
 }
 
 function toolContent(text: string) {

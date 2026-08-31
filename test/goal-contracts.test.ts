@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import {
@@ -557,6 +559,40 @@ test("goal_complete requires current goal_id before validating summary", async (
 		assert.doesNotMatch(staleId.content?.[0]?.text ?? "", new RegExp(escapeRegExp(currentGoal.id)));
 		assert.equal(requireLastGoal(mock).id, currentGoal.id);
 		assert.equal(lastGoalStatus(mock), "active");
+	} finally {
+		mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+	}
+});
+
+test("goal_complete renders successful summaries as sanitized Markdown", async () => {
+	initTheme("dark", false);
+	const { mock, ctx } = await startGoalForTest();
+	const tool = requireGoalTool(mock, "goal_complete");
+	const goalId = requireLastGoal(mock).id;
+	const summary =
+		"# Verification\n\n- `npm test` passed\n\n```ts\nconst done = true;\n```\n\n\u001b]52;c;clipboard\u0007";
+
+	try {
+		const accepted = await tool.execute(
+			"render-completion",
+			{ goal_id: goalId, summary },
+			new AbortController().signal,
+			() => undefined,
+			ctx,
+		);
+		assert.equal(typeof tool.renderResult, "function");
+
+		const lines = tool
+			.renderResult?.(accepted, { expanded: false, isPartial: false })
+			.render(80)
+			.map((line) => stripTerminalSequences(line));
+		const rendered = lines?.join("\n") ?? "";
+		assert.match(rendered, /Goal complete/);
+		assert.match(rendered, /Verification/);
+		assert.match(rendered, /npm test/);
+		assert.match(rendered, /const done = true;/);
+		assert.doesNotMatch(rendered, /\*\*Goal complete\*\*|# Verification|clipboard/u);
+		assert.ok(lines?.every((line) => line.length <= 80));
 	} finally {
 		mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 	}
