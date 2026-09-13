@@ -43,7 +43,15 @@ export function registerGoalLifecycle(
   runController: GoalRunController,
   options: GoalLifecycleOptions = {},
 ) {
+  // Pi invalidates this module's ExtensionContext when the session is replaced
+  // or reloaded, but detached prompts and queued emits can still invoke these
+  // handlers afterward. After session_shutdown every ctx getter throws a stale
+  // context error, so late handlers must return before touching ctx. The flag
+  // starts true so handlers keep working on runners where session_start was
+  // never emitted (for example late extension loading).
+  let sessionActive = true;
   pi.on("session_start", async (_event, ctx) => {
+    sessionActive = true;
     runtime.bindWorkflowSession(ctx.sessionManager);
     runtime.replaceMenuSession();
     runtime.clearCompletionStatusTimer();
@@ -136,6 +144,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    sessionActive = false;
     const shutdownSession = ctx.sessionManager;
     runController.unbindSession();
     runtime.closeMenuSession();
@@ -164,6 +173,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("session_before_compact", (event, ctx) => {
+    if (!sessionActive) return;
     if (runtime.activeGoal?.status === "budget_limited") {
       if ((event as { willRetry?: boolean }).willRetry === true) return { cancel: true as const };
       return;
@@ -179,6 +189,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("session_compact", async (event, ctx) => {
+    if (!sessionActive) return;
     if (runtime.activeGoal?.status !== "active" || !runtime.ownsWorkflow(runtime.activeGoal)) {
       runtime.clearGoalRecovery();
       return;
@@ -217,6 +228,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("input", (event, ctx) => {
+    if (!sessionActive) return;
     if (event.source === "extension") {
       if (
         runtime.consumeCancelledGoalPrompt(event.text) ||
@@ -253,6 +265,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("message_start", (event, ctx) => {
+    if (!sessionActive) return;
     const message = event.message as { role?: unknown; content?: unknown };
     if (
       message.role === "assistant" &&
@@ -306,6 +319,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("context", (event, ctx) => {
+    if (!sessionActive) return;
     const keptMessages = event.messages.filter((message) => runtime.keepBudgetWrapUpMessage(message));
     const hasGoalContractHistory =
       keptMessages.some(isGoalContextContract) || runtime.hasGoalContextContractHistory(ctx);
@@ -326,6 +340,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("tool_call", (event, ctx) => {
+    if (!sessionActive) return;
     runtime.markAgentToolAttempted();
     if (
       runtime.activeGoal?.status === "budget_limited" &&
@@ -356,6 +371,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("tool_execution_end", (_event, ctx) => {
+    if (!sessionActive) return;
     if (
       runtime.activeGoal?.status === "budget_limited" &&
       runtime.budgetWrapUp?.goalId === runtime.activeGoal.id &&
@@ -378,6 +394,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("before_agent_start", (event, ctx) => {
+    if (!sessionActive) return;
     runtime.clearAgentRun();
     // Pi-owned retries emit agent_start directly. Reaching a normal prompt
     // boundary means cleanup no longer owns the next run, so the hard-cap guard
@@ -443,6 +460,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("agent_start", (_event, _ctx) => {
+    if (!sessionActive) return;
     const activeGoal = runtime.activeGoal;
     if (activeGoal && runtime.guardAbortGoalId === activeGoal.id && activeGoal.status === "paused") {
       if (runtime.consumeQueuedNonGoalFollowUpForAgentStart()) {
@@ -458,6 +476,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("turn_end", (event, ctx) => {
+    if (!sessionActive) return;
     runtime.recordAutomaticTurn(ctx, event.message);
     // Terminal Goal tools transition state synchronously, but their inactive contract
     // must wait until Pi has persisted the real tool result at this turn boundary.
@@ -467,6 +486,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("agent_end", (event, ctx) => {
+    if (!sessionActive) return;
     const run = runtime.finishAgentRun();
     if (run.goalId === null) return;
     if (!runtime.canRecordGoalUsage() && !runtime.hasActiveBudgetWrapUp()) return;
@@ -553,6 +573,7 @@ export function registerGoalLifecycle(
   });
 
   pi.on("agent_settled", (_event, ctx) => {
+    if (!sessionActive) return;
     if (runtime.activeGoal?.status === "active" && !runtime.ownsWorkflow(runtime.activeGoal)) {
       runtime.cancelContinuationWork();
       runtime.clearGoalRecovery();

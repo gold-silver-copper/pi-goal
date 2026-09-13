@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { completeGoalArguments, isRemovedQueueCommand, parseCommand } from "./command.js";
 import type { GoalCommandController } from "./commands.js";
-import { notifyTerminal, safeTerminalText } from "./errors.js";
+import { isStaleContextError, notifyTerminal, safeTerminalText } from "./errors.js";
 import type { GoalRuntime } from "./runtime.js";
 
 type GoalManagerModule = Pick<typeof import("./menu.js"), "showGoalManager">;
@@ -26,63 +26,71 @@ export function registerGoalCommand(
     description: "Run a goal to completion: /goal [--tokens 100k] <goal_to_complete>",
     getArgumentCompletions: (prefix) => completeGoalArguments(prefix),
     handler: async (args, ctx) => {
-      if (runtime.hasLegacyQueueInterface() && isRemovedQueueCommand(args)) {
-        reportRemovedQueueCommand(ctx, runtime);
-        return;
-      }
-      const result = parseCommand(args);
-      if (typeof result === "string") {
-        reportCommandError(result, ctx);
-        return;
-      }
-      if (result.kind === "show" && args.trim() === "") {
-        const menuIsCurrent = captureMenuOwnership(runtime);
-        let managerModule: GoalManagerModule;
-        try {
-          managerModule = await loadGoalManager();
-        } catch (error) {
-          if (!menuIsCurrent()) return;
-          throw error;
+      try {
+        if (runtime.hasLegacyQueueInterface() && isRemovedQueueCommand(args)) {
+          reportRemovedQueueCommand(ctx, runtime);
+          return;
         }
-        if (!menuIsCurrent()) return;
-        const { showGoalManager } = managerModule;
-        await showGoalManager(runtime, commands, ctx, async (menuCtx, target) => {
-          const settingsAreCurrent = captureMenuOwnership(runtime);
-          let settingsModule: GoalSettingsModule;
+        const result = parseCommand(args);
+        if (typeof result === "string") {
+          reportCommandError(result, ctx);
+          return;
+        }
+        if (result.kind === "show" && args.trim() === "") {
+          const menuIsCurrent = captureMenuOwnership(runtime);
+          let managerModule: GoalManagerModule;
           try {
-            settingsModule = await loadGoalSettings();
+            managerModule = await loadGoalManager();
           } catch (error) {
-            if (!settingsAreCurrent()) return;
+            if (!menuIsCurrent()) return;
             throw error;
           }
-          if (!settingsAreCurrent()) return;
-          const { showGoalSettings } = settingsModule;
-          await showGoalSettings(runtime, menuCtx, {
-            settingsPath: options.settingsPath,
-            initialScreen: target,
+          if (!menuIsCurrent()) return;
+          const { showGoalManager } = managerModule;
+          await showGoalManager(runtime, commands, ctx, async (menuCtx, target) => {
+            const settingsAreCurrent = captureMenuOwnership(runtime);
+            let settingsModule: GoalSettingsModule;
+            try {
+              settingsModule = await loadGoalSettings();
+            } catch (error) {
+              if (!settingsAreCurrent()) return;
+              throw error;
+            }
+            if (!settingsAreCurrent()) return;
+            const { showGoalSettings } = settingsModule;
+            await showGoalSettings(runtime, menuCtx, {
+              settingsPath: options.settingsPath,
+              initialScreen: target,
+            });
           });
-        });
-        return;
-      }
-      switch (result.kind) {
-        case "show":
-          commands.showGoal(ctx);
           return;
-        case "pause":
-          commands.pauseGoal(ctx);
-          return;
-        case "resume":
-          await commands.resumeGoal(ctx);
-          return;
-        case "clear":
-          commands.clearGoal(ctx);
-          return;
-        case "edit":
-          await commands.editGoal(result.objective ?? "", result.tokenBudget, ctx);
-          return;
-        case "start":
-          await commands.startGoal(result.objective ?? "", result.tokenBudget, ctx);
-          return;
+        }
+        switch (result.kind) {
+          case "show":
+            commands.showGoal(ctx);
+            return;
+          case "pause":
+            commands.pauseGoal(ctx);
+            return;
+          case "resume":
+            await commands.resumeGoal(ctx);
+            return;
+          case "clear":
+            commands.clearGoal(ctx);
+            return;
+          case "edit":
+            await commands.editGoal(result.objective ?? "", result.tokenBudget, ctx);
+            return;
+          case "start":
+            await commands.startGoal(result.objective ?? "", result.tokenBudget, ctx);
+            return;
+        }
+      } catch (error) {
+        // Pi invalidates command ctx when the session is replaced while a
+        // confirmation or menu await is still in flight. The dead session's
+        // command result is discarded, so a stale context is not an error.
+        if (isStaleContextError(error)) return;
+        throw error;
       }
     },
   });

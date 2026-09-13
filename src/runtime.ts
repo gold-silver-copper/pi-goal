@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { checkpointGoalActiveTime, formatDuration, formatTokenCount, updateGoalUsage } from "./accounting.js";
-import { formatError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
+import { formatError, isStaleContextError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
 import {
   createGoalContextContract,
   createInactiveGoalContextContract,
@@ -432,7 +432,7 @@ export class GoalRuntime {
       if (this.activeGoal?.id === intent.goalId && this.activeGoal.status === "active") {
         this.continuationIntent = intent;
       }
-      notifyTerminal(ctx.ui, `Goal prompt failed: ${formatError(error)}`, "error");
+      notifyWhenSessionAlive(ctx, `Goal prompt failed: ${formatError(error)}`, "error");
       return false;
     }
   }
@@ -528,7 +528,7 @@ export class GoalRuntime {
       try {
         this.dispatchDueGoalWait(ctx);
       } catch (error) {
-        notifyTerminal(ctx.ui, `Goal wait deadline failed: ${formatError(error)}`, "error");
+        notifyWhenSessionAlive(ctx, `Goal wait deadline failed: ${formatError(error)}`, "error");
       }
     });
   }
@@ -740,7 +740,7 @@ export class GoalRuntime {
       return true;
     } catch (error) {
       this.budgetWrapUp.delivered = false;
-      notifyTerminal(ctx.ui, `Goal budget wrap-up failed: ${formatError(error)}`, "error");
+      notifyWhenSessionAlive(ctx, `Goal budget wrap-up failed: ${formatError(error)}`, "error");
       return false;
     }
   }
@@ -1527,9 +1527,21 @@ async function sendPrompt(pi: ExtensionAPI, ctx: StatusContext, prompt: string, 
     return true;
   } catch (error) {
     if (!isCurrent || isCurrent()) {
-      notifyTerminal(ctx.ui, `Goal prompt failed: ${formatError(error)}`, "error");
+      notifyWhenSessionAlive(ctx, `Goal prompt failed: ${formatError(error)}`, "error");
     }
     return false;
+  }
+}
+
+// A delayed callback can outlive its session: after replacement or reload Pi
+// throws a stale-context error from every ctx getter, so reporting through the
+// dead session's UI must not turn into another throw inside a timer or a catch
+// block.
+function notifyWhenSessionAlive(ctx: StatusContext, message: string, level?: "info" | "warning" | "error") {
+  try {
+    notifyTerminal(ctx.ui, message, level);
+  } catch (error) {
+    if (!isStaleContextError(error)) throw error;
   }
 }
 

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { createMockPi } from "../../../test/support.js";
 import {
   lastGoalStatus,
+  registerGoal,
   requireGoalTool,
   requireLastGoal,
   STALE_GOAL_TOOL_REASON,
@@ -264,4 +266,110 @@ test("state changes between agent_end and agent_settled cancel stale continuatio
       `${action} must not dispatch the stale continuation`,
     );
   }
+});
+
+test("lifecycle handlers ignore emits after session shutdown invalidated the context", async () => {
+  const settled = await startGoalForTest();
+  await settled.mock.events.get("agent_end")?.[0]?.(
+    { messages: [{ role: "assistant", stopReason: "stop" }] },
+    settled.ctx,
+  );
+  assert.equal(settled.mock.sentUserMessages.length, 1);
+  settled.mock.events.get("session_shutdown")?.[0]?.({}, settled.ctx);
+
+  const staleError = new Error(
+    "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+  );
+  let staleReads = 0;
+  const staleCtx = new Proxy(
+    {},
+    {
+      get() {
+        staleReads += 1;
+        throw staleError;
+      },
+    },
+  ) as never;
+
+  // Detached prompts keep emitting on the invalidated runner after /new,
+  // /fork, /resume, /switch, or /reload. Every late emit must return before
+  // touching the dead ctx.
+  for (const name of [
+    "session_before_compact",
+    "session_compact",
+    "input",
+    "message_start",
+    "context",
+    "tool_call",
+    "tool_execution_end",
+    "before_agent_start",
+    "agent_start",
+    "turn_end",
+    "agent_end",
+    "agent_settled",
+  ]) {
+    for (const handler of settled.mock.events.get(name) ?? []) {
+      await handler(
+        {
+          type: name,
+          text: "stray input",
+          source: "interactive",
+          messages: [{ role: "assistant", stopReason: "stop" }],
+          message: { role: "assistant", stopReason: "stop", content: [] },
+        },
+        staleCtx,
+      );
+    }
+  }
+
+  assert.equal(staleReads, 0);
+  assert.equal(settled.mock.sentUserMessages.length, 1);
+});
+
+test("a stale context inside the /goal command resolves quietly", async () => {
+  const staleError = new Error(
+    "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().",
+  );
+  const staleCtx = new Proxy(
+    {},
+    {
+      get() {
+        throw staleError;
+      },
+    },
+  ) as never;
+  const mock = createMockPi();
+  registerGoal(mock.pi);
+
+  await mock.commands.get("goal")?.handler("resume", staleCtx);
+  await mock.commands.get("goal")?.handler("show", staleCtx);
+
+  const realError = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("boom");
+      },
+    },
+  ) as never;
+  await assert.rejects(async () => mock.commands.get("goal")?.handler("show", realError), /boom/);
+});
+
+test("failed continuation delivery does not rethrow through a stale notification target", async () => {
+  const retried = await startGoalForTest();
+  await retried.mock.events.get("agent_end")?.[0]?.(
+    { messages: [{ role: "assistant", stopReason: "stop" }] },
+    retried.ctx,
+  );
+
+  retried.mock.rawPi.sendUserMessage = () => {
+    throw new Error("runtime unavailable");
+  };
+  const staleUi = retried.ctx as { ui: { notify: (message: string, level?: string) => void } };
+  staleUi.ui.notify = () => {
+    throw new Error("This extension ctx is stale after session replacement or reload. Do not use.");
+  };
+
+  await retried.mock.events.get("agent_settled")?.[0]?.({}, retried.ctx);
+  assert.equal(retried.mock.sentUserMessages.length, 1);
 });

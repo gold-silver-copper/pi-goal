@@ -61,6 +61,17 @@ export function notifyTerminal(
   ui.notify(safeTerminalText(message), level);
 }
 
+/**
+ * True when an error came from an ExtensionContext invalidated by session
+ * replacement or reload. Pi throws this from every ctx getter and pi method on
+ * the stale runner, so deferred callbacks must treat it as cancellation.
+ */
+export function isStaleContextError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes("This extension ctx is stale after session replacement or reload")
+  );
+}
+
 export function formatError(error: unknown) {
   return truncateNotification(error instanceof Error ? error.message : String(error));
 }
