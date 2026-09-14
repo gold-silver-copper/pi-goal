@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.54.5
+
+### Patch Changes
+
+- ea85bd8: Ignore stale extension contexts after session replacement or reload so detached prompt emits, delayed goal timers, and in-flight /goal commands cannot surface extension errors or crash Pi.
+
 ## 0.54.4
 
 ### Patch Changes
