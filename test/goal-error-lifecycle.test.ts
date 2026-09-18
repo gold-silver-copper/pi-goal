@@ -76,7 +76,17 @@ test("usage-limit classification recognizes quota failures without swallowing un
     }),
     false,
   );
-  for (const errorMessage of ["rate_limit_exceeded", "HTTP 429 Too Many Requests", "Internal server error 503"]) {
+  for (const errorMessage of [
+    "rate_limit_exceeded",
+    "HTTP 429 Too Many Requests",
+    "Internal server error 503",
+    "Anthropic stream ended before message_stop",
+    "Upstream stream ended before terminal chunk",
+    "stream closed before the response completed",
+    "Premature close",
+    "Incomplete response received from application",
+    "Unexpected end of response body",
+  ]) {
     assert.equal(
       isRetryableGoalInterruption({ role: "assistant", stopReason: "error", errorMessage }),
       true,
