@@ -152,7 +152,7 @@ test("bare /goal and /goal status report the goal in every mode without a menu",
     stderr.mockRestore();
   }
   assert.deepEqual(written, [
-    "No goal is set. Start one with /goal <objective>.\n",
+    "stderr:No goal is set. Start one with /goal <objective>.\n",
     "stderr:No goal is set. Start one with /goal <objective>.\n",
   ]);
 });

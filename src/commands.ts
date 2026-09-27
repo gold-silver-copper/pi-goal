@@ -244,15 +244,11 @@ function isNonInteractive(ctx: StatusContext) {
 }
 
 /**
- * Show a command result. Pi's print and JSON modes have no UI, so the text goes
- * to stdout in print mode and to stderr in JSON mode (stdout carries the event stream).
+ * Show a command result. Pi's print and JSON modes have no UI and keep stdout for
+ * their own output (other writes are redirected to stderr), so the text goes to stderr.
  */
 export function report(ctx: StatusContext, message: string, level: "info" | "warning" | "error") {
-  if (ctx.mode === "print") {
-    process.stdout.write(`${safeTerminalText(message)}\n`);
-    return;
-  }
-  if (ctx.mode === "json") {
+  if (ctx.mode === "print" || ctx.mode === "json") {
     process.stderr.write(`${safeTerminalText(message)}\n`);
     return;
   }

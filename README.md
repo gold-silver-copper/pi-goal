@@ -37,7 +37,7 @@ pi loads `src/index.ts` directly; there is no build step. Goal mode can run paid
 | --- | --- |
 | `/goal <objective>` | Start a goal. Replacing an unfinished goal asks first in the TUI. |
 | `/goal --force <objective>` | Start a goal, replacing an unfinished one without asking (needed in print and JSON modes). |
-| `/goal` or `/goal status` | Show the objective, status, active time and the last 10 progress notes. Works while the agent is running. In print mode it writes to stdout; in JSON mode to stderr. |
+| `/goal` or `/goal status` | Show the objective, status, active time and the last 10 progress notes. Works while the agent is running. In print and JSON modes it writes to stderr (pi keeps stdout for its own output). |
 | `/goal edit <objective>` | Replace the objective. An active goal gets the new objective at once. |
 | `/goal pause` | Pause and abort the current run. |
 | `/goal resume` | Resume a paused, blocked or usage-limited goal, or wake a waiting one. |
