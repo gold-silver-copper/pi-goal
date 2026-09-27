@@ -4,16 +4,15 @@ export const GOAL_COMPLETE_TOOL = "goal_complete";
 export const GOAL_BLOCKED_TOOL = "goal_blocked";
 export const GOAL_WAIT_TOOL = "goal_wait";
 export const GOAL_TOOL_NAMES = [GOAL_COMPLETE_TOOL, GOAL_BLOCKED_TOOL, GOAL_WAIT_TOOL] as const;
-const REQUIRED_GOAL_TOOL_NAMES = [GOAL_COMPLETE_TOOL, GOAL_BLOCKED_TOOL] as const;
 
+/** A goal can only finish through goal_complete, so a policy that hides it makes Goal mode unusable. */
 export function goalToolsAvailable(pi: Pick<ExtensionAPI, "getActiveTools">) {
-  const active = new Set(pi.getActiveTools());
-  return REQUIRED_GOAL_TOOL_NAMES.every((name) => active.has(name));
+  return pi.getActiveTools().includes(GOAL_COMPLETE_TOOL);
 }
 
 export function assertGoalToolsAvailable(pi: Pick<ExtensionAPI, "getActiveTools">) {
   if (goalToolsAvailable(pi)) return;
   throw new Error(
-    "goal_complete and goal_blocked are unavailable; include them in the active tool allowlist or leave the restrictive tool mode first.",
+    "goal_complete is unavailable; include it in the active tool allowlist or leave the restrictive tool mode first.",
   );
 }

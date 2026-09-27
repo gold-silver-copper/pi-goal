@@ -46,9 +46,6 @@
     "typescript": "7.0.2",
     "vitest": "^5.0.2"
   },
-  "dependencies": {
-    "@narumitw/pi-tui-kit": "^0.59.0"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gold-silver-copper/pi-goal.git"

@@ -1,172 +1,82 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const GOAL_SETTINGS_FILE = "pi-goal.json";
 
-export type ContinuationLimit = number | null;
-
 export interface GoalSettings {
-  rpc: {
-    enabled: boolean;
-  };
-  continuationLimits: {
-    automaticTurns: ContinuationLimit;
-    noProgressTurns: ContinuationLimit;
-  };
+  /** Minutes of active time between checkpoint notifications; `null` turns checkpoints off. */
+  checkpointMinutes: number | null;
+  /** Active hours after which the goal pauses; `null` means no limit. */
+  maxActiveHours: number | null;
+  notifications: boolean;
 }
 
 export const DEFAULT_GOAL_SETTINGS: GoalSettings = {
-  rpc: { enabled: false },
-  continuationLimits: { automaticTurns: 25, noProgressTurns: 3 },
+  checkpointMinutes: 120,
+  maxActiveHours: null,
+  notifications: true,
 };
 
-export type GoalSettingsLoadResult =
-  | { kind: "missing"; legacyExperimentalGoals: false }
-  | { kind: "invalid"; reason: string }
-  | { kind: "loaded"; settings: GoalSettings; legacyExperimentalGoals: boolean };
-
-export type GoalSettingsLoadIssue = Extract<GoalSettingsLoadResult, { kind: "invalid" }>;
-
-interface GoalSettingsSaveFileSystem {
-  mkdirSync: typeof mkdirSync;
-  writeFileSync: typeof writeFileSync;
-  renameSync: typeof renameSync;
-  rmSync: typeof rmSync;
+export interface GoalSettingsLoad {
+  settings: GoalSettings;
+  warnings: string[];
 }
 
-export function normalizeGoalSettings(value: unknown): GoalSettings | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+const KNOWN_KEYS = new Set(Object.keys(DEFAULT_GOAL_SETTINGS));
 
-  const rpcValue = Object.hasOwn(value, "rpc") ? Reflect.get(value, "rpc") : undefined;
-  if (rpcValue !== undefined && (typeof rpcValue !== "object" || rpcValue === null || Array.isArray(rpcValue))) {
-    return undefined;
-  }
-  const rpcEnabled =
-    rpcValue && Object.hasOwn(rpcValue, "enabled")
-      ? Reflect.get(rpcValue, "enabled")
-      : DEFAULT_GOAL_SETTINGS.rpc.enabled;
-  if (typeof rpcEnabled !== "boolean") return undefined;
-
-  const continuationLimitsValue = Object.hasOwn(value, "continuationLimits")
-    ? Reflect.get(value, "continuationLimits")
-    : undefined;
-  if (
-    continuationLimitsValue !== undefined &&
-    (typeof continuationLimitsValue !== "object" ||
-      continuationLimitsValue === null ||
-      Array.isArray(continuationLimitsValue))
-  ) {
-    return undefined;
-  }
-  const automaticTurns = continuationLimitsValue
-    ? normalizeContinuationLimit(
-        Reflect.get(continuationLimitsValue, "automaticTurns"),
-        DEFAULT_GOAL_SETTINGS.continuationLimits.automaticTurns,
-      )
-    : DEFAULT_GOAL_SETTINGS.continuationLimits.automaticTurns;
-  const noProgressTurns = continuationLimitsValue
-    ? normalizeContinuationLimit(
-        Reflect.get(continuationLimitsValue, "noProgressTurns"),
-        DEFAULT_GOAL_SETTINGS.continuationLimits.noProgressTurns,
-      )
-    : DEFAULT_GOAL_SETTINGS.continuationLimits.noProgressTurns;
-  if (automaticTurns === undefined || noProgressTurns === undefined) return undefined;
-
-  return {
-    rpc: { enabled: rpcEnabled },
-    continuationLimits: { automaticTurns, noProgressTurns },
-  };
+export function defaultGoalSettingsPath() {
+  return join(getAgentDir(), GOAL_SETTINGS_FILE);
 }
 
-function normalizeContinuationLimit(value: unknown, fallback: ContinuationLimit): ContinuationLimit | undefined {
-  if (value === undefined) return fallback;
-  if (value === null) return null;
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-export function saveGoalSettings(
-  settings: GoalSettings,
-  settingsPath = join(getAgentDir(), GOAL_SETTINGS_FILE),
-  overrides: Partial<GoalSettingsSaveFileSystem> = {},
-) {
-  const normalized = normalizeGoalSettings(settings);
-  if (!normalized) throw new Error("Refusing to save invalid pi-goal settings.");
-
-  let raw: Record<string, unknown> = {};
-  try {
-    const contents = readFileSync(settingsPath, "utf8");
-    const parsed = JSON.parse(contents) as unknown;
-    if (!normalizeGoalSettings(parsed)) {
-      throw new Error(`${settingsPath}: invalid settings shape`);
-    }
-    raw = ownRecord(parsed) ?? {};
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "ENOENT") {
-      throw new Error(`Cannot save invalid settings file: ${formatError(error)}`);
-    }
-  }
-
-  const rpc = ownRecord(raw.rpc) ?? {};
-  const continuationLimits = ownRecord(raw.continuationLimits) ?? {};
-  const document = `${JSON.stringify(
-    {
-      ...raw,
-      rpc: { ...rpc, enabled: normalized.rpc.enabled },
-      continuationLimits: {
-        ...continuationLimits,
-        automaticTurns: normalized.continuationLimits.automaticTurns,
-        noProgressTurns: normalized.continuationLimits.noProgressTurns,
-      },
-    },
-    null,
-    2,
-  )}\n`;
-  const fs = { mkdirSync, writeFileSync, renameSync, rmSync, ...overrides };
-  const temporaryPath = join(dirname(settingsPath), `.${basename(settingsPath)}.${randomUUID()}.tmp`);
-  try {
-    fs.mkdirSync(dirname(settingsPath), { recursive: true });
-    fs.writeFileSync(temporaryPath, document, { encoding: "utf8", flag: "wx" });
-    fs.renameSync(temporaryPath, settingsPath);
-  } finally {
-    try {
-      fs.rmSync(temporaryPath, { force: true });
-    } catch {
-      // Best-effort cleanup must not replace the save result.
-    }
-  }
-}
-
-export function readGoalSettings(settingsPath = join(getAgentDir(), GOAL_SETTINGS_FILE)): GoalSettingsLoadResult {
+/** Missing file: defaults. Unknown keys: ignored with one warning. Invalid values: default plus a warning. */
+export function readGoalSettings(settingsPath = defaultGoalSettingsPath()): GoalSettingsLoad {
   let contents: string;
   try {
     contents = readFileSync(settingsPath, "utf8");
-  } catch (error: unknown) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return { kind: "missing", legacyExperimentalGoals: false };
-    }
-    return { kind: "invalid", reason: `${settingsPath}: ${formatError(error)}` };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return { settings: { ...DEFAULT_GOAL_SETTINGS }, warnings: [] };
+    return { settings: { ...DEFAULT_GOAL_SETTINGS }, warnings: [`${settingsPath}: ${formatError(error)}; using defaults.`] };
   }
-
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(contents) as unknown;
-    const settings = normalizeGoalSettings(parsed);
-    return settings
-      ? { kind: "loaded", settings, legacyExperimentalGoals: hasLegacyExperimentalGoals(parsed) }
-      : { kind: "invalid", reason: `${settingsPath}: invalid settings shape` };
-  } catch (error: unknown) {
-    return { kind: "invalid", reason: `${settingsPath}: ${formatError(error)}` };
+    parsed = JSON.parse(contents);
+  } catch (error) {
+    return { settings: { ...DEFAULT_GOAL_SETTINGS }, warnings: [`${settingsPath}: ${formatError(error)}; using defaults.`] };
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { settings: { ...DEFAULT_GOAL_SETTINGS }, warnings: [`${settingsPath}: expected a JSON object; using defaults.`] };
+  }
+  return normalizeGoalSettings(parsed as Record<string, unknown>, settingsPath);
 }
 
-function hasLegacyExperimentalGoals(value: unknown) {
-  const experimental = ownRecord(ownRecord(value)?.experimental);
-  return experimental?.goals === true;
+export function normalizeGoalSettings(raw: Record<string, unknown>, source = GOAL_SETTINGS_FILE): GoalSettingsLoad {
+  const settings = { ...DEFAULT_GOAL_SETTINGS };
+  const warnings: string[] = [];
+  const unknown = Object.keys(raw).filter((key) => !KNOWN_KEYS.has(key));
+  if (unknown.length > 0) warnings.push(`${source}: ignoring unknown settings ${unknown.join(", ")}.`);
+
+  const invalid = (key: string, expected: string) =>
+    warnings.push(`${source}: ${key} must be ${expected}; using ${JSON.stringify(DEFAULT_GOAL_SETTINGS[key as keyof GoalSettings])}.`);
+  if (Object.hasOwn(raw, "checkpointMinutes")) {
+    const value = raw.checkpointMinutes;
+    if (value === null || isPositiveNumber(value)) settings.checkpointMinutes = value;
+    else invalid("checkpointMinutes", "a positive number or null");
+  }
+  if (Object.hasOwn(raw, "maxActiveHours")) {
+    const value = raw.maxActiveHours;
+    if (value === null || isPositiveNumber(value)) settings.maxActiveHours = value;
+    else invalid("maxActiveHours", "a positive number or null");
+  }
+  if (Object.hasOwn(raw, "notifications")) {
+    if (typeof raw.notifications === "boolean") settings.notifications = raw.notifications;
+    else invalid("notifications", "true or false");
+  }
+  return { settings, warnings };
 }
 
-function ownRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

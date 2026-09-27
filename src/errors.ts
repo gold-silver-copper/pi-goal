@@ -5,7 +5,6 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { assistantUsageTokens, nonNegativeFiniteNumber } from "./accounting.js";
 
 export type AgentStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
@@ -17,7 +16,6 @@ export interface AssistantMessageLike {
   api?: PiAssistantMessage["api"];
   provider?: PiAssistantMessage["provider"];
   model?: string;
-  usage?: Usage;
   timestamp?: number;
 }
 
@@ -124,8 +122,6 @@ export function findFinalAssistantMessage(messages: unknown[]): AssistantMessage
     if (typeof candidate.provider === "string") assistant.provider = candidate.provider;
     if (typeof candidate.model === "string") assistant.model = candidate.model;
     if (typeof candidate.timestamp === "number") assistant.timestamp = candidate.timestamp;
-    const usage = normalizeUsage(candidate.usage);
-    if (usage) assistant.usage = usage;
     return assistant;
   }
   return undefined;
@@ -138,7 +134,7 @@ function toPiAssistantMessage(assistant: AssistantMessageLike): PiAssistantMessa
     api: assistant.api ?? "openai-responses",
     provider: assistant.provider ?? "unknown",
     model: assistant.model ?? "unknown",
-    usage: assistant.usage ?? zeroUsage(),
+    usage: zeroUsage(),
     stopReason: assistant.stopReason ?? "error",
     errorMessage: assistant.errorMessage,
     timestamp: assistant.timestamp ?? Date.now(),
@@ -158,24 +154,4 @@ function zeroUsage(): Usage {
 
 function isAgentStopReason(value: unknown): value is AgentStopReason {
   return ["stop", "length", "toolUse", "error", "aborted"].includes(String(value));
-}
-
-function normalizeUsage(value: unknown): Usage | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const usage = value as Partial<Usage>;
-  if (typeof usage.input !== "number" || typeof usage.output !== "number") return undefined;
-  return {
-    input: nonNegativeFiniteNumber(usage.input),
-    output: nonNegativeFiniteNumber(usage.output),
-    cacheRead: nonNegativeFiniteNumber(usage.cacheRead),
-    cacheWrite: nonNegativeFiniteNumber(usage.cacheWrite),
-    totalTokens: assistantUsageTokens(usage),
-    cost: {
-      input: usage.cost?.input ?? 0,
-      output: usage.cost?.output ?? 0,
-      cacheRead: usage.cost?.cacheRead ?? 0,
-      cacheWrite: usage.cost?.cacheWrite ?? 0,
-      total: usage.cost?.total ?? 0,
-    },
-  };
 }

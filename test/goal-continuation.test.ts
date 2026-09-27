@@ -154,7 +154,7 @@ test("pause aborts the current turn, blocks stale tools, and persists paused sta
 
   assert.equal(pauseAborts, 1);
   assert.equal(lastGoalStatus(paused.mock), "paused");
-  assert.equal(paused.statuses.get("goal"), "paused · automatic 0/25");
+  assert.equal(paused.statuses.get("goal"), "paused");
   assert.deepEqual(
     paused.mock.events.get("input")?.[0]?.({ source: "extension", text: staleContinuation }, paused.ctx),
     { action: "handled" },

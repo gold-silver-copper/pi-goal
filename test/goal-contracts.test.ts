@@ -3,25 +3,14 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
 import { createMockContext, createMockPi } from "./support/pi-mock.js";
-import {
-  assistantUsageTokens,
-  buildGoalSystemPrompt,
-  completeGoalArguments,
-  cumulativeAssistantTokens,
-  formatDuration,
-  formatStatus,
-  formatTokenCount,
-  isContradictoryCompletionSummary,
-  parseCommand,
-  parseTokenBudget,
-} from "../src/goal.js";
+import { formatDuration, isContradictoryCompletionSummary } from "../src/goal.js";
 import {
   assertHardenedGoalPrompt,
   assertPromptHasGoalId,
   assistantUsageEntry,
   escapeRegExp,
   findPersistedGoal,
-  LOW_LIMITS_SETTINGS_PATH,
+  DEFAULT_SETTINGS_PATH,
   lastGoalStatus,
   registerGoal,
   requireGoalTool,
@@ -31,143 +20,7 @@ import {
   STALE_GOAL_TOOL_REASON,
   type StoredGoal,
   startGoalForTest,
-  UNLIMITED_SETTINGS_PATH,
 } from "./support/goal-fixture.js";
-
-test("completeGoalArguments suggests /goal subcommands and token options", () => {
-  assert.deepEqual(
-    completeGoalArguments("")?.map((item) => item.label),
-    ["pause", "resume", "clear", "edit", "status", "--tokens"],
-  );
-  assert.deepEqual(
-    completeGoalArguments("")?.map((item) => item.description),
-    [
-      "Pause the active goal",
-      "Resume a stopped or budget-limited goal",
-      "Clear the current goal",
-      "Edit the current goal objective",
-      "Show the current goal",
-      "Set a token budget before the goal",
-    ],
-  );
-  assert.deepEqual(
-    completeGoalArguments("pa")?.map((item) => item.value),
-    ["pause"],
-  );
-  assert.deepEqual(
-    completeGoalArguments("pause")?.map((item) => item.value),
-    ["pause"],
-  );
-  assert.deepEqual(
-    completeGoalArguments("--t")?.map((item) => item.value),
-    ["--tokens "],
-  );
-  assert.deepEqual(
-    completeGoalArguments("edit ")?.map((item) => item.value),
-    ["edit --tokens "],
-  );
-  assert.deepEqual(
-    completeGoalArguments("edit --t")?.map((item) => item.value),
-    ["edit --tokens "],
-  );
-  assert.equal(completeGoalArguments("ship objective"), null);
-  assert.equal(completeGoalArguments("edit objective"), null);
-});
-
-test("parseCommand parses budgets, quoted objectives, and management commands", () => {
-  assert.deepEqual(parseCommand('--tokens 1.5k "ship tests"'), {
-    kind: "start",
-    objective: "ship tests",
-    tokenBudget: 1500,
-  });
-  assert.deepEqual(parseCommand("edit --tokens 2m revise scope"), {
-    kind: "edit",
-    objective: "revise scope",
-    tokenBudget: 2_000_000,
-  });
-  assert.deepEqual(parseCommand("pause"), { kind: "pause" });
-  assert.equal(parseCommand("pause now"), "Usage: /goal pause");
-});
-
-test("assistant token accounting prefers totalTokens and uses a cache-inclusive fallback", () => {
-  assert.equal(
-    assistantUsageTokens({
-      totalTokens: 100,
-      input: 40,
-      output: 10,
-      cacheRead: 30,
-      cacheWrite: 20,
-    }),
-    100,
-  );
-  assert.equal(assistantUsageTokens({ input: 10, output: 5, cacheRead: 20, cacheWrite: 3 }), 38);
-  assert.equal(
-    assistantUsageTokens({
-      totalTokens: -1,
-      input: 10,
-      output: Number.NaN,
-      cacheRead: -20,
-      cacheWrite: 3,
-    }),
-    13,
-  );
-  assert.equal(assistantUsageTokens({ totalTokens: Number.POSITIVE_INFINITY }), 0);
-  assert.equal(
-    assistantUsageTokens({
-      input: Number.MAX_SAFE_INTEGER,
-      output: Number.MAX_SAFE_INTEGER,
-      cacheRead: Number.MAX_SAFE_INTEGER,
-      cacheWrite: Number.MAX_SAFE_INTEGER,
-    }),
-    Number.MAX_SAFE_INTEGER,
-  );
-  assert.equal(assistantUsageTokens(undefined), 0);
-
-  assert.equal(
-    cumulativeAssistantTokens([
-      { type: "message", message: { role: "assistant", usage: { totalTokens: 25 } } },
-      { type: "message", message: { role: "user", usage: { totalTokens: 500 } } },
-      {
-        type: "message",
-        message: {
-          role: "assistant",
-          usage: { input: 5, output: 2, cacheRead: 7, cacheWrite: 1 },
-        },
-      },
-      { type: "custom", data: { usage: { totalTokens: 999 } } },
-    ]),
-    40,
-  );
-  assert.equal(
-    cumulativeAssistantTokens([
-      {
-        type: "message",
-        message: { role: "assistant", usage: { totalTokens: Number.MAX_SAFE_INTEGER } },
-      },
-      { type: "message", message: { role: "assistant", usage: { totalTokens: 1 } } },
-    ]),
-    Number.MAX_SAFE_INTEGER,
-  );
-});
-
-test("goal token usage subtracts its baseline and clamps branch rewinds", async () => {
-  const branch: Record<string, unknown>[] = [assistantUsageEntry({ totalTokens: 100 })];
-  const tracked = await startGoalForTest({
-    sessionManager: { getBranch: () => branch, getEntries: () => branch },
-  });
-
-  branch.push(assistantUsageEntry({ totalTokens: 40, input: 999, output: 999 }));
-  await tracked.mock.commands.get("goal")?.handler("", tracked.ctx);
-  assert.equal(requireLastGoal(tracked.mock).tokensUsed, 40);
-
-  branch.splice(0, branch.length, assistantUsageEntry({ totalTokens: 50 }));
-  await tracked.mock.commands.get("goal")?.handler("", tracked.ctx);
-  assert.equal(requireLastGoal(tracked.mock).tokensUsed, 0);
-
-  branch.push(assistantUsageEntry({ input: 20, output: 10, cacheRead: 30, cacheWrite: 20 }));
-  await tracked.mock.commands.get("goal")?.handler("", tracked.ctx);
-  assert.equal(requireLastGoal(tracked.mock).tokensUsed, 30);
-});
 
 test("active elapsed time excludes stopped waits and survives active edits", async () => {
   let now = 10_000;
@@ -220,47 +73,6 @@ test("goal completion settles the active clock before clearing state", async () 
   assert.equal(lastGoalStatus(completed.mock), null);
 });
 
-test("session reload immediately limits an active goal whose persisted usage is exhausted", () => {
-  const sessionGoal: StoredGoal = {
-    id: "restored-exhausted-active",
-    text: "restore exhausted active",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 2,
-    iteration: 3,
-    tokenBudget: 10,
-    tokensUsed: 5,
-    timeUsedSeconds: 4,
-    baselineTokens: 0,
-  };
-  const restored = restoreStoredGoalForTest(sessionGoal, [assistantUsageEntry({ totalTokens: 12 })]);
-  assert.equal(lastGoalStatus(restored.mock), "budget_limited");
-  assert.equal(requireLastGoal(restored.mock).tokensUsed, 12);
-  assert.equal(restored.mock.sentMessages.length, 0);
-});
-
-test("session reload pauses an active goal already at the automatic response limit", () => {
-  const sessionGoal: StoredGoal = {
-    id: "restored-at-automatic-limit",
-    text: "restore bounded active goal",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 2,
-    iteration: 3,
-    tokensUsed: 5,
-    timeUsedSeconds: 4,
-    baselineTokens: 0,
-    automaticModelTurns: 25,
-    toolFreeRepeatCount: 0,
-  };
-  const restored = restoreStoredGoalForTest(sessionGoal);
-  assert.equal(lastGoalStatus(restored.mock), "paused");
-  assert.equal(requireLastGoal(restored.mock).safetyPauseCause, "continuation_limit");
-  assert.equal(restored.mock.sentUserMessages.length, 0);
-  assert.match(restored.notifications.at(-1)?.message ?? "", /automatic-work limit reached.*25 of 25/i);
-  assert.match(restored.notifications.at(-1)?.message ?? "", /progress is saved/i);
-});
-
 test("session reload pauses an active goal already at the no-progress limit", () => {
   const sessionGoal: StoredGoal = {
     id: "restored-at-no-progress-limit",
@@ -269,35 +81,13 @@ test("session reload pauses an active goal already at the no-progress limit", ()
     startedAt: 1,
     updatedAt: 2,
     iteration: 3,
-    tokensUsed: 5,
     timeUsedSeconds: 4,
-    baselineTokens: 0,
-    automaticModelTurns: 0,
-    toolFreeRepeatCount: 3,
-    lastToolFreeOutputFingerprint: "d".repeat(64),
+    toolFreeRuns: 3,
   };
-  const restored = restoreStoredGoalForTest(sessionGoal, [], {}, LOW_LIMITS_SETTINGS_PATH);
+  const restored = restoreStoredGoalForTest(sessionGoal, [], {}, DEFAULT_SETTINGS_PATH);
   assert.equal(lastGoalStatus(restored.mock), "paused");
   assert.equal(requireLastGoal(restored.mock).safetyPauseCause, "no_progress");
   assert.equal(restored.mock.sentUserMessages.length, 0);
-});
-
-test("session reload drops malformed persisted budgets instead of limiting the goal", () => {
-  const restored = restoreStoredGoalForTest({
-    id: "restored-malformed-budget",
-    text: "restore malformed budget",
-    status: "active",
-    startedAt: 0,
-    updatedAt: 2,
-    iteration: 3,
-    tokenBudget: -1,
-    tokensUsed: 5,
-    timeUsedSeconds: 4,
-    baselineTokens: 0,
-  });
-  assert.equal(lastGoalStatus(restored.mock), "active");
-  assert.equal(requireLastGoal(restored.mock).tokenBudget, undefined);
-  assert.equal(requireLastGoal(restored.mock).startedAt, 0);
 });
 
 test("legacy active-time state migrates without counting offline or reload time", async () => {
@@ -323,81 +113,6 @@ test("legacy active-time state migrates without counting offline or reload time"
   assert.equal(requireLastGoal(reloaded.mock).timeUsedSeconds, 11);
 });
 
-test("parseTokenBudget and format helpers use compact units", () => {
-  assert.equal(parseTokenBudget("250"), 250);
-  assert.equal(parseTokenBudget("300000"), 300_000);
-  assert.equal(parseTokenBudget("300k"), 300_000);
-  assert.equal(parseTokenBudget("2.5k"), 2500);
-  assert.equal(parseTokenBudget("1.5m"), 1_500_000);
-  assert.equal(parseTokenBudget("0"), undefined);
-  assert.equal(parseTokenBudget("0.1"), undefined);
-  assert.equal(parseTokenBudget("-1"), undefined);
-  assert.equal(parseTokenBudget("Infinity"), undefined);
-  assert.equal(parseTokenBudget("many"), undefined);
-  assert.equal(parseTokenBudget("9007199254740992"), undefined);
-  assert.equal(parseTokenBudget(String(Number.MAX_SAFE_INTEGER)), Number.MAX_SAFE_INTEGER);
-  assert.equal(formatTokenCount(1500), "1.5k");
-  assert.equal(formatTokenCount(2_000_000), "2m");
-  assert.equal(formatDuration(59), "59s");
-  assert.equal(formatDuration(3660), "1h1m");
-});
-
-test("formatStatus reports active, stopped, budget-limited, complete, and empty states", () => {
-  const activeGoal = {
-    id: "g1",
-    text: "finish",
-    status: "active",
-    startedAt: 0,
-    updatedAt: 0,
-    iteration: 1,
-    tokenBudget: 2000,
-    tokensUsed: 500,
-    timeUsedSeconds: 90,
-    baselineTokens: 0,
-    automaticModelTurns: 0,
-    toolFreeRepeatCount: 0,
-  } as const;
-
-  assert.equal(formatStatus(undefined, 25), undefined);
-  assert.equal(formatStatus(activeGoal, 25), "active 500/2k · automatic 0/25");
-  assert.equal(
-    formatStatus(
-      {
-        ...activeGoal,
-        status: "paused",
-        automaticModelTurns: 25,
-        safetyPauseCause: "continuation_limit",
-      },
-      25,
-    ),
-    "paused · automatic limit 25/25",
-  );
-  assert.equal(formatStatus({ ...activeGoal, status: "blocked" }, 25), "blocked · automatic 0/25");
-  assert.equal(formatStatus({ ...activeGoal, status: "usage_limited" }, 25), "usage · automatic 0/25");
-  assert.equal(formatStatus({ ...activeGoal, status: "budget_limited" }, 25), "budget 500/2k · automatic 0/25");
-  assert.equal(formatStatus(activeGoal, null), "active 500/2k · automatic Unlimited");
-  assert.equal(formatStatus({ ...activeGoal, status: "complete" }, 25), "complete");
-});
-
-test("goal start feedback exposes the default cap and explicit Unlimited mode", async () => {
-  const capped = await startGoalForTest();
-  assert.match(capped.notifications.at(-1)?.message ?? "", /automatic work pauses after 25 responses/i);
-  assert.match(capped.notifications.at(-1)?.message ?? "", /open \/goal to monitor/i);
-  assert.doesNotMatch(capped.notifications.at(-1)?.message ?? "", /Token budget:/i);
-
-  const budgeted = await startGoalForTest({}, "--tokens 100k budgeted objective");
-  assert.match(
-    budgeted.notifications.at(-1)?.message ?? "",
-    /Token budget: 100k cumulative.*final model call may exceed/is,
-  );
-  assert.match(budgeted.notifications.at(-1)?.message ?? "", /automatic work pauses after 25 responses/i);
-
-  const unlimited = await startGoalForTest({}, "unbounded objective", UNLIMITED_SETTINGS_PATH);
-  assert.match(unlimited.notifications.at(-1)?.message ?? "", /automatic work is Unlimited/i);
-  assert.match(unlimited.notifications.at(-1)?.message ?? "", /provider cost/i);
-  assert.equal(unlimited.notifications.at(-1)?.level, "warning");
-});
-
 test("goal notifications sanitize terminal controls without mutating the objective", async () => {
   const objective = "ship \u001b]52;c;clipboard\u0007 \u001b[2Jclear \u009b31mred\u0000 safely";
   const started = await startGoalForTest({}, objective);
@@ -407,28 +122,6 @@ test("goal notifications sanitize terminal controls without mutating the objecti
   assertNoTerminalControls(notification);
   assert.doesNotMatch(notification, /clipboard|\[2J/u);
   assert.match(notification, /ship\s+clear\s+31mred\s+safely/u);
-});
-
-test("buildGoalSystemPrompt escapes objective XML and includes goal_id guard rules", () => {
-  const prompt = buildGoalSystemPrompt({
-    id: "g<1&2>",
-    text: "fix <all> & verify",
-    status: "active",
-    startedAt: 0,
-    updatedAt: 0,
-    iteration: 2,
-    tokenBudget: 1000,
-    tokensUsed: 250,
-    timeUsedSeconds: 0,
-    baselineTokens: 0,
-  });
-
-  assert.match(prompt, /fix &lt;all&gt; &amp; verify/);
-  assert.match(prompt, /g&lt;1&amp;2&gt;/);
-  assert.match(prompt, /Respect the goal token budget \(250\/1k used\)/);
-  assert.match(prompt, /Only call the goal_complete tool after/);
-  assert.match(prompt, /pass this exact goal_id/);
-  assert.match(prompt, /stale-turn guard/);
 });
 
 test("all goal prompt paths share the goal_id guard and hardened audit", async () => {
@@ -910,7 +603,7 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
   assertNoTerminalControls(accepted.content?.[0]?.text ?? "");
   assert.doesNotMatch(accepted.content?.[0]?.text ?? "", /clipboard|\[2J/u);
   assert.equal(lastGoalStatus(blocked.mock), "blocked");
-  assert.equal(blocked.statuses.get("goal"), "blocked · automatic 0/25");
+  assert.equal(blocked.statuses.get("goal"), "blocked");
   assert.match(blocked.notifications.at(-1)?.message ?? "", /goal blocked/i);
   assertNoTerminalControls(blocked.notifications.at(-1)?.message ?? "");
   assert.deepEqual(

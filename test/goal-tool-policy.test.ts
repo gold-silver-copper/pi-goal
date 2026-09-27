@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import {
   assistantUsageEntry,
@@ -106,55 +106,53 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
   ]);
 });
 
-test("bare goal is menu-first in TUI, observable in RPC, and rejects headless modes", async () => {
+test("bare /goal and /goal status report the goal in every mode without a menu", async () => {
   const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
   registerGoal(mock.pi);
-  const selections: Array<{ title: string; actions: string[] }> = [];
+  let selections = 0;
   const tui = createMockContext({
     mode: "tui",
     hasUI: true,
-    select: async (title: string, actions: string[]) => {
-      selections.push({ title, actions });
+    select: async () => {
+      selections++;
       return undefined;
     },
   });
   mock.events.get("session_start")?.[0]?.({}, tui.ctx);
 
-  await mock.commands.get("goal")?.handler("", tui.ctx);
-  assert.equal(selections.length, 1);
-  assert.match(selections[0]?.title ?? "", /Goal\nNo goal is currently set/i);
-  assert.ok(selections[0]?.actions.includes("Start a goal…"));
-  assert.equal(tui.notifications.length, 0);
-
-  await mock.commands.get("goal")?.handler("status", tui.ctx);
-  assert.equal(selections.length, 1);
-  assert.match(tui.notifications.at(-1)?.message ?? "", /No goal is currently set/i);
+  for (const args of ["", "status"]) {
+    await mock.commands.get("goal")?.handler(args, tui.ctx);
+    assert.match(tui.notifications.at(-1)?.message ?? "", /No goal is set/i);
+  }
+  assert.equal(selections, 0);
 
   const rpc = createMockContext({ mode: "rpc", hasUI: true });
   await mock.commands.get("goal")?.handler("status", rpc.ctx);
-  assert.match(rpc.notifications.at(-1)?.message ?? "", /No goal is currently set/i);
+  assert.match(rpc.notifications.at(-1)?.message ?? "", /No goal is set/i);
 
-  let printSelections = 0;
-  const print = createMockContext({
-    mode: "print",
-    hasUI: false,
-    select: async () => {
-      printSelections++;
-      return undefined;
-    },
+  const written: string[] = [];
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    written.push(String(chunk));
+    return true;
   });
-  await assert.rejects(
-    mock.commands.get("goal")?.handler("", print.ctx) as Promise<unknown>,
-    /\/goal status is unavailable in print mode/i,
-  );
-  assert.equal(printSelections, 0);
-  assert.equal(print.notifications.length, 0);
-
-  const json = createMockContext({ mode: "json", hasUI: false });
-  await assert.rejects(
-    mock.commands.get("goal")?.handler("status", json.ctx) as Promise<unknown>,
-    /\/goal status is unavailable in json mode/i,
-  );
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(`stderr:${String(chunk)}`);
+    return true;
+  });
+  try {
+    const print = createMockContext({ mode: "print", hasUI: false });
+    await mock.commands.get("goal")?.handler("", print.ctx);
+    const json = createMockContext({ mode: "json", hasUI: false });
+    await mock.commands.get("goal")?.handler("status", json.ctx);
+    assert.equal(print.notifications.length, 0);
+  } finally {
+    stdout.mockRestore();
+    stderr.mockRestore();
+  }
+  assert.deepEqual(written, [
+    "No goal is set. Start one with /goal <objective>.\n",
+    "stderr:No goal is set. Start one with /goal <objective>.\n",
+  ]);
 });
 
 test("malformed goal commands notify UI modes and reject headless modes observably", async () => {
@@ -208,33 +206,10 @@ test("missing and invalid settings keep the stable Goal tool envelope", () => {
 
     assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
     assert.equal(
-      context.notifications.some((notice) => /settings ignored/.test(notice.message)),
+      context.notifications.some((notice) => /^pi-goal: /.test(notice.message)),
       expectsWarning,
     );
   }
-});
-
-test("invalid settings remain read-only in the Goal settings UI", async () => {
-  const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-  registerGoalWithSettingsPath(mock.pi, INVALID_SETTINGS_PATH);
-  const selections = ["Settings…", undefined, "Close"];
-  let settingsRender = "";
-  const context = createMockContext({
-    mode: "tui",
-    hasUI: true,
-    select: async (title: string) => {
-      if (/Read only/i.test(title)) settingsRender = title;
-      return selections.shift();
-    },
-  });
-  mock.events.get("session_start")?.[0]?.({}, context.ctx);
-
-  await mock.commands.get("goal")?.handler("", context.ctx);
-
-  assert.match(settingsRender, /Read only/i);
-  assert.match(settingsRender, /invalid settings file/i);
-  assert.match(settingsRender, /using built-in defaults/i);
-  assert.equal(readFileSync(INVALID_SETTINGS_PATH, "utf8"), '{"toolVisibility":"sometimes","rpc":{"enabled":"yes"}}\n');
 });
 
 test("Goal lifecycle never mutates its stable helper-tool envelope", async () => {
@@ -267,7 +242,7 @@ test("Goal lifecycle never mutates its stable helper-tool envelope", async () =>
 });
 
 test("restoring an unfinished goal keeps registered Goal tools active", () => {
-  for (const status of ["active", "paused", "blocked", "usage_limited", "budget_limited"] as const) {
+  for (const status of ["active", "paused", "blocked", "usage_limited"] as const) {
     const { mock } = restoreGoalForTest(status);
     assert.deepEqual(
       mock.rawPi.getActiveTools(),
@@ -285,9 +260,7 @@ test("restore does not widen an earlier restrictive session-start policy", () =>
     startedAt: 1,
     updatedAt: 2,
     iteration: 3,
-    tokensUsed: 5,
     timeUsedSeconds: 4,
-    baselineTokens: 0,
   };
   const branch = [
     { type: "custom", customType: "goal-state", data: { goal: sessionGoal } },
@@ -437,46 +410,6 @@ test("a later restrictive tool policy pauses the goal at agent_end without conti
   assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash"]);
 });
 
-test("restored active goal applies budget limits before unavailable-tool pauses", () => {
-  for (const [tokensUsed, expectedStatus, expectedNotice] of [
-    [5, "paused", /goal tools.*paused/i],
-    [100, "budget_limited", /token budget reached/i],
-  ] as const) {
-    const sessionGoal: StoredGoal = {
-      id: `restored-without-tools-${tokensUsed}`,
-      text: "restore safely",
-      status: "active",
-      startedAt: 1,
-      updatedAt: 2,
-      iteration: 3,
-      tokenBudget: 100,
-      tokensUsed,
-      timeUsedSeconds: 4,
-      baselineTokens: 0,
-    };
-    const branch = [
-      { type: "custom", customType: "goal-state", data: { goal: sessionGoal } },
-      assistantUsageEntry({ totalTokens: tokensUsed }),
-    ];
-    const mock = createMockPi();
-    registerGoal(mock.pi);
-    mock.rawPi.setActiveTools([]);
-    const originalSetActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
-    mock.rawPi.setActiveTools = (names: string[]) => {
-      originalSetActiveTools(names.filter((name) => !name.startsWith("goal_")));
-    };
-    const context = createMockContext({
-      sessionManager: { getBranch: () => branch, getEntries: () => branch },
-    });
-
-    mock.events.get("session_start")?.[0]?.({}, context.ctx);
-
-    assert.equal(lastGoalStatus(mock), expectedStatus);
-    assert.equal(mock.sentUserMessages.length, 0);
-    assert.match(context.notifications.at(-1)?.message ?? "", expectedNotice);
-  }
-});
-
 test("stable Goal tools respect a restrictive policy when starting a goal", async () => {
   const mock = createMockPi();
   registerGoal(mock.pi);
@@ -510,7 +443,7 @@ test("start fails without committing a goal when a required tool is inactive", a
   registerGoal(mock.pi);
   const context = createMockContext();
   mock.events.get("session_start")?.[0]?.({}, context.ctx);
-  mock.rawPi.setActiveTools(["read", "bash", "goal_complete"]);
+  mock.rawPi.setActiveTools(["read", "bash", "goal_blocked", "goal_wait"]);
   let activeToolWrites = 0;
   const setActiveTools = mock.rawPi.setActiveTools.bind(mock.rawPi);
   mock.rawPi.setActiveTools = (names) => {
@@ -523,7 +456,7 @@ test("start fails without committing a goal when a required tool is inactive", a
   assert.equal(mock.sentUserMessages.length, 0);
   assert.match(context.notifications.at(-1)?.message ?? "", /Cannot start \/goal/i);
   assert.equal(activeToolWrites, 0);
-  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete"]);
+  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_blocked", "goal_wait"]);
 });
 
 test("failed first prompt delivery preserves the stable tool set", async () => {
@@ -596,20 +529,6 @@ describe("failed lazy reactivation deliveries restore the restrictive tool set",
     assert.deepEqual(resumed.mock.rawPi.getActiveTools(), ["read", "bash"]);
   });
 
-  test("budget-increase edit", async () => {
-    const edited = restoreGoalForTest("budget_limited");
-    const original = requireLastGoal(edited.mock);
-    edited.mock.rawPi.setActiveTools(["read", "bash"]);
-    edited.mock.rawPi.sendUserMessage = () => {
-      throw new Error("edit delivery failed");
-    };
-
-    await edited.mock.commands.get("goal")?.handler("edit --tokens 20 revised objective", edited.ctx);
-
-    assert.equal(requireLastGoal(edited.mock).id, original.id);
-    assert.equal(lastGoalStatus(edited.mock), "budget_limited");
-    assert.deepEqual(edited.mock.rawPi.getActiveTools(), ["read", "bash"]);
-  });
 });
 
 test("a stale first kickoff cannot run or roll back a newer replacement", async () => {

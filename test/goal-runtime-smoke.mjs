@@ -15,7 +15,7 @@ import {
 
 const extensionPath = resolve(import.meta.dirname, "../src/goal.ts");
 
-async function createHarness(responses, fauxOptions = {}, prepareSession, goalSettings, piSettings = {}, managedRun) {
+async function createHarness(responses, fauxOptions = {}, prepareSession, goalSettings, piSettings = {}) {
   const root = await mkdtemp(join(tmpdir(), "pi-goal-runtime-"));
   const agentDir = join(root, "agent");
   const cwd = join(root, "workspace");
@@ -77,7 +77,6 @@ async function createHarness(responses, fauxOptions = {}, prepareSession, goalSe
     const model = modelRegistry.find(provider, faux.getModel().id);
     assert.ok(model, "expected registered faux model");
     faux.setResponses(responses);
-    const managedRunEvents = [];
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
@@ -94,21 +93,13 @@ async function createHarness(responses, fauxOptions = {}, prepareSession, goalSe
         {
           name: "runtime-smoke-observer",
           factory: (pi) => {
-            if (managedRun) {
-              pi.events.on(`pi-goal:event:${managedRun.runId}`, (event) => {
-                managedRunEvents.push(event);
-              });
-              pi.on("session_start", () => {
-                pi.events.emit("pi-goal:start", managedRun);
-              });
-            }
             pi.registerTool({
-              name: "budget_probe",
-              label: "Budget Probe",
+              name: "probe",
+              label: "Probe",
               description: "No-op tool for lifecycle smoke coverage",
               parameters: Type.Object({}),
               async execute() {
-                lifecycleEvents.push("budget_probe_execute");
+                lifecycleEvents.push("probe_execute");
                 return { content: [{ type: "text", text: "probe complete" }] };
               },
             });
@@ -153,7 +144,6 @@ async function createHarness(responses, fauxOptions = {}, prepareSession, goalSe
       })),
       faux,
       lifecycleEvents,
-      managedRunEvents,
       session: result.session,
       cleanup: cleanupResources,
     };
@@ -261,92 +251,11 @@ async function runawayNoProgressScenario() {
     assert.equal(harness.faux.state.callCount, 4);
     assert.equal(persistedGoalStatus(harness.session), "paused");
     assert.equal(persistedGoalState(harness.session)?.goal?.safetyPauseCause, "no_progress");
-    assert.equal(persistedGoalState(harness.session)?.goal?.toolFreeRepeatCount, 3);
+    assert.equal(persistedGoalState(harness.session)?.goal?.toolFreeRuns, 3);
     assert.equal(
       harness.session.messages.map(userMessageText).filter((text) => text.includes("pi-goal-continuation:")).length,
       3,
     );
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function automaticToolLoopLimitScenario() {
-  const observedSignals = [];
-  const toolResponse = (_context, options) => {
-    observedSignals.push(options?.signal?.aborted === true);
-    return fauxAssistantMessage(fauxToolCall("budget_probe", {}));
-  };
-  const harness = await createHarness(
-    [
-      fauxAssistantMessage("Start automatic work."),
-      toolResponse,
-      toolResponse,
-      toolResponse,
-      (_context, options) => {
-        observedSignals.push(options?.signal?.aborted === true);
-        assert.equal(options?.signal?.aborted, true);
-        return fauxAssistantMessage("Synthetic aborted cleanup.");
-      },
-    ],
-    {},
-    undefined,
-    { continuationLimits: { automaticTurns: 3, noProgressTurns: null } },
-  );
-  try {
-    await harness.session.prompt("/goal bounded automatic tool loop");
-    await harness.session.agent.waitForIdle();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(persistedGoalStatus(harness.session), "paused");
-    assert.equal(persistedGoalState(harness.session)?.goal?.safetyPauseCause, "continuation_limit");
-    assert.equal(persistedGoalState(harness.session)?.goal?.automaticModelTurns, 3);
-    assert.equal(harness.lifecycleEvents.filter((event) => event === "budget_probe_execute").length, 3);
-    assert.deepEqual(observedSignals.slice(0, 3), [false, false, false]);
-    assert.ok(observedSignals.length <= 4);
-    if (observedSignals.length === 4) assert.equal(observedSignals[3], true);
-    assert.ok(harness.faux.state.callCount <= 5);
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function retryAtHardLimitScenario() {
-  const observedSignals = [];
-  const harness = await createHarness(
-    [
-      fauxAssistantMessage("Initial unfinished result."),
-      (_context, options) => {
-        observedSignals.push(options?.signal?.aborted === true);
-        return fauxAssistantMessage("", {
-          stopReason: "error",
-          errorMessage: "HTTP 524: transient upstream timeout",
-        });
-      },
-      (_context, options) => {
-        observedSignals.push(options?.signal?.aborted === true);
-        assert.equal(options?.signal?.aborted, true);
-        return fauxAssistantMessage("Guard-owned aborted retry cleanup.");
-      },
-    ],
-    {},
-    undefined,
-    { continuationLimits: { automaticTurns: 1, noProgressTurns: null } },
-    {
-      compaction: { enabled: false },
-      retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
-    },
-  );
-  try {
-    await harness.session.prompt("/goal retry cannot cross hard limit");
-    await harness.session.agent.waitForIdle();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(persistedGoalStatus(harness.session), "paused");
-    assert.equal(persistedGoalState(harness.session)?.goal?.safetyPauseCause, "continuation_limit");
-    assert.equal(persistedGoalState(harness.session)?.goal?.automaticModelTurns, 1);
-    assert.deepEqual(observedSignals.slice(0, 1), [false]);
-    assert.ok(observedSignals.length <= 2, "hard limit allows at most one cleanup provider call");
-    if (observedSignals.length === 2) assert.equal(observedSignals[1], true);
-    assert.equal(harness.faux.state.callCount, observedSignals.length + 1);
   } finally {
     await harness.cleanup();
   }
@@ -365,7 +274,7 @@ async function automaticRetryOwnershipScenario() {
     ],
     {},
     undefined,
-    { continuationLimits: { automaticTurns: 3, noProgressTurns: null } },
+    undefined,
     {
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
@@ -377,7 +286,9 @@ async function automaticRetryOwnershipScenario() {
     await harness.session.agent.waitForIdle();
     assert.equal(persistedGoalStatus(harness.session), null);
     assert.ok(
-      persistedGoalHistory(harness.session).some((goal) => goal.automaticModelTurns === 2 && goal.status === "active"),
+      // Only automatic runs count toward the no-progress guard, so a tool-free
+      // recovered response counted once proves the retry kept automatic ownership.
+      persistedGoalHistory(harness.session).some((goal) => goal.toolFreeRuns === 1 && goal.status === "active"),
       "retry response must retain automatic ownership",
     );
     assert.ok(
@@ -479,7 +390,7 @@ async function staleBlockedToolAbortScenario() {
       stopReason: "error",
       errorMessage: "Unauthorized: invalid API key",
     }),
-    fauxAssistantMessage(fauxToolCall("budget_probe", {})),
+    fauxAssistantMessage(fauxToolCall("probe", {})),
     (_context, options) => {
       observedSignals.push(options?.signal?.aborted === true);
       return fauxAssistantMessage("Synthetic stale-turn cleanup.");
@@ -496,103 +407,7 @@ async function staleBlockedToolAbortScenario() {
     await harness.session.agent.waitForIdle();
     assert.ok(harness.faux.state.callCount <= 3, "stale guard must allow at most one cleanup call");
     assert.equal(observedSignals.includes(false), false, "any cleanup call must inherit abort");
-    assert.equal(harness.lifecycleEvents.filter((event) => event === "budget_probe_execute").length, 0);
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function budgetBoundaryScenario() {
-  const harness = await createHarness([fauxAssistantMessage(fauxToolCall("budget_probe", {}))]);
-  try {
-    await harness.session.prompt("/goal --tokens 1 budget boundary runtime smoke");
-    await harness.session.agent.waitForIdle();
-    assert.equal(harness.faux.state.callCount, 1, "budget stop must not queue another model call");
-    assert.equal(
-      harness.session.messages.some(
-        (message) => message.role === "custom" && message.customType === "goal-budget-wrap-up",
-      ),
-      false,
-    );
-    assert.equal(persistedGoalStatus(harness.session), "budget_limited");
-    assert.equal(harness.lifecycleEvents.filter((event) => event === "tool_execution_end").length, 1);
-    assert.ok(
-      harness.lifecycleEvents.indexOf("assistant_message_end") < harness.lifecycleEvents.indexOf("tool_execution_end"),
-      "assistant message must finalize before tool_execution_end",
-    );
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function budgetViolationScenario() {
-  const harness = await createHarness([fauxAssistantMessage(fauxToolCall("budget_probe", {}))]);
-  try {
-    await harness.session.prompt("/goal --tokens 1 stop budget tools at runtime");
-    await harness.session.agent.waitForIdle();
-    assert.equal(harness.faux.state.callCount, 1, "budget guard must not queue cleanup work");
-    assert.equal(harness.lifecycleEvents.filter((event) => event === "budget_probe_execute").length, 1);
-    assert.equal(persistedGoalStatus(harness.session), "budget_limited");
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function budgetAgentEndFallbackScenario() {
-  const harness = await createHarness([fauxAssistantMessage("No-tool budget response.")]);
-  try {
-    await harness.session.prompt("/goal --tokens 1 no-tool budget runtime smoke");
-    await harness.session.agent.waitForIdle();
-    assert.equal(harness.faux.state.callCount, 1);
-    assert.equal(persistedGoalStatus(harness.session), "budget_limited");
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function managedRunRpcScenario() {
-  const runId = crypto.randomUUID();
-  const harness = await createHarness(
-    [completionResponse],
-    {},
-    undefined,
-    { rpc: { enabled: true } },
-    {},
-    { runId, objective: "complete a managed runtime run" },
-  );
-  try {
-    await waitFor(
-      () => harness.managedRunEvents.some((event) => event.status === "complete"),
-      "managed run completion",
-    );
-    await harness.session.agent.waitForIdle();
-    assert.deepEqual(
-      harness.managedRunEvents.filter((event) => event.type === "state").map((event) => event.status),
-      ["active", "complete"],
-    );
-    assert.equal(
-      harness.managedRunEvents.filter((event) => event.type === "state" && event.status !== "active").length,
-      1,
-    );
-  } finally {
-    await harness.cleanup();
-  }
-}
-
-async function managedRunDisabledScenario() {
-  const runId = crypto.randomUUID();
-  const harness = await createHarness([], {}, undefined, undefined, {}, { runId, objective: "must stay disabled" });
-  try {
-    await waitFor(() => harness.managedRunEvents.length > 0, "managed run disabled rejection");
-    assert.deepEqual(harness.managedRunEvents, [
-      {
-        type: "error",
-        runId,
-        operation: "start",
-        error: { code: "RPC_DISABLED", message: "Managed run RPC is disabled." },
-      },
-    ]);
-    assert.equal(harness.faux.state.callCount, 0);
+    assert.equal(harness.lifecycleEvents.filter((event) => event === "probe_execute").length, 0);
   } finally {
     await harness.cleanup();
   }
@@ -624,9 +439,7 @@ async function manualCompactionScenario() {
           startedAt: now - 1_000,
           updatedAt: now - 1_000,
           iteration: 1,
-          tokensUsed: 0,
           timeUsedSeconds: 1,
-          baselineTokens: 0,
         },
       });
     },
@@ -658,19 +471,12 @@ async function manualCompactionScenario() {
 await agentDirectoryIsolationScenario();
 await normalContinuationScenario();
 await runawayNoProgressScenario();
-await automaticToolLoopLimitScenario();
-await retryAtHardLimitScenario();
 await automaticRetryOwnershipScenario();
 await queuedInputScenario();
 await busyEditOwnershipScenario();
 await pauseScenario();
 await staleBlockedToolAbortScenario();
-await budgetBoundaryScenario();
-await budgetViolationScenario();
-await budgetAgentEndFallbackScenario();
-await managedRunRpcScenario();
-await managedRunDisabledScenario();
 await manualCompactionScenario();
 console.log(
-  "pi-goal runtime smoke: normal, runaway guards, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, managed-run RPC, terminal budget stops, and manual compaction passed",
+  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, and manual compaction passed",
 );

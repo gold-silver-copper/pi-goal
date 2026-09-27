@@ -1,22 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
+import { createMockContext, createMockPi } from "./support/pi-mock.js";
 
 function runtime() {
   const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
-  const state = new GoalRuntime(mock.pi);
-  state.bindWorkflowSession({});
-  assert.equal(state.acquireWorkflow(), true);
-  return { mock, state };
+  return { mock, state: new GoalRuntime(mock.pi) };
 }
 
 test("stopped transition owner applies explicit-pause invariants once", () => {
   const { mock, state } = runtime();
-  const goal = createGoal("pause safely", undefined, 0);
+  const goal = createGoal("pause safely");
   state.activeGoal = goal;
   state.requestContinuation(goal);
-  state.budgetWrapUp = { goalId: goal.id, delivered: true };
   state.goalRecovery = {
     goalId: goal.id,
     kind: "provider_retry",
@@ -34,7 +30,6 @@ test("stopped transition owner applies explicit-pause invariants once", () => {
   assert.equal(stopped?.status, "paused");
   assert.equal(state.activeGoal?.id, goal.id);
   assert.equal(state.continuationIntent, undefined);
-  assert.equal(state.budgetWrapUp, undefined);
   assert.equal(state.goalRecovery, undefined);
   assert.equal(state.staleGoalToolCallsBlocked, true);
   assert.equal(aborts, 1);
@@ -44,7 +39,7 @@ test("stopped transition owner applies explicit-pause invariants once", () => {
 
 test("stopped transition owner rejects stale goal ownership without side effects", () => {
   const { mock, state } = runtime();
-  const goal = createGoal("current", undefined, 0);
+  const goal = createGoal("current");
   state.activeGoal = goal;
   state.requestContinuation(goal);
   const context = createMockContext();
@@ -63,8 +58,8 @@ test("stopped transition owner rejects stale goal ownership without side effects
 
 test("activation rollback stops the restored goal only while the failed activation owns state", () => {
   const { state } = runtime();
-  const previous = createGoal("previous", undefined, 0);
-  const failed = createGoal("failed activation", undefined, 0);
+  const previous = createGoal("previous");
+  const failed = createGoal("failed activation");
   state.activeGoal = failed;
   const context = createMockContext();
 

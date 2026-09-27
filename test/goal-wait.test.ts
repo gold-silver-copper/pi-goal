@@ -225,8 +225,7 @@ test("RPC input and custom follow-up boundaries wake waiting goals", async () =>
 test("user resume clears waiting without rotating the goal or resetting safety", async () => {
   const waiting = await startGoalForTest();
   const goal = requireLastGoal(waiting.mock);
-  goal.automaticModelTurns = 4;
-  goal.toolFreeRepeatCount = 2;
+  goal.toolFreeRuns = 2;
   await requireGoalTool(waiting.mock, "goal_wait").execute(
     "wait-resume",
     { goal_id: goal.id, reason: "Waiting for approval" },
@@ -242,8 +241,7 @@ test("user resume clears waiting without rotating the goal or resetting safety",
   const resumed = requireLastGoal(waiting.mock);
   assert.equal(resumed.id, goal.id);
   assert.equal(resumed.waiting, undefined);
-  assert.equal(resumed.automaticModelTurns, 4);
-  assert.equal(resumed.toolFreeRepeatCount, 2);
+  assert.equal(resumed.toolFreeRuns, 2);
   assert.equal(waiting.mock.sentUserMessages.length, 2);
   assert.match(waiting.mock.sentUserMessages.at(-1)?.text ?? "", /resumed.*waiting/is);
 });
@@ -407,7 +405,7 @@ test("clamp output sanitizes terminal controls and remains bounded", async () =>
 });
 
 test("restoring a persisted short absolute deadline does not extend it to the new floor", async () => {
-  const stored = createGoal("restore legacy short wait", undefined, 0);
+  const stored = createGoal("restore legacy short wait");
   stored.waiting = {
     reason: "Legacy short deadline",
     resumeAt: Date.now() + 100,
@@ -647,36 +645,6 @@ test("failed edit and replacement delivery restore the exact waiting goal and de
     await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
     assert.equal(waiting.mock.sentUserMessages.length, 2);
   }
-});
-
-test("failed priority delivery restores the waiting head and its deadline", async () => {
-  const queueSettings = settingsPath("wait-priority-rollback.json");
-  writeFileSync(queueSettings, '{"experimental":{"goals":true}}\n');
-  const waiting = await startGoalForTest({}, "original goal", queueSettings);
-  const goal = requireLastGoal(waiting.mock);
-  await requireGoalTool(waiting.mock, "goal_wait").execute(
-    "wait-priority-rollback",
-    {
-      goal_id: goal.id,
-      reason: "Waiting before failed priority",
-      resume_after_ms: MIN_GOAL_WAIT_DELAY_MS,
-    },
-    new AbortController().signal,
-    () => undefined,
-    waiting.ctx,
-  );
-  const sendUserMessage = waiting.mock.rawPi.sendUserMessage.bind(waiting.mock.rawPi);
-  waiting.mock.rawPi.sendUserMessage = () => {
-    throw new Error("priority delivery failed");
-  };
-
-  await waiting.mock.commands.get("goal")?.handler("prioritize urgent goal", waiting.ctx);
-  assert.equal(requireLastGoal(waiting.mock).id, goal.id);
-  assert.equal(requireLastGoal(waiting.mock).waiting?.reason, "Waiting before failed priority");
-
-  waiting.mock.rawPi.sendUserMessage = sendUserMessage;
-  await vi.advanceTimersByTimeAsync(MIN_GOAL_WAIT_DELAY_MS);
-  assert.equal(waiting.mock.sentUserMessages.length, 2);
 });
 
 test("session restore keeps a waiting deadline absolute and wakes once", async () => {

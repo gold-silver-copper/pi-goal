@@ -11,15 +11,9 @@ export const GOAL_SETTINGS_DIRECTORY = mkdtempSync(join(tmpdir(), "pi-goal-test-
 export const DEFAULT_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "default.json");
 export const INVALID_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "invalid.json");
 export const MISSING_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "missing.json");
-export const LOW_LIMITS_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "low-limits.json");
-export const ONE_TURN_LIMIT_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "one-turn-limit.json");
-export const UNLIMITED_SETTINGS_PATH = join(GOAL_SETTINGS_DIRECTORY, "unlimited.json");
 
 writeFileSync(DEFAULT_SETTINGS_PATH, "{}\n");
-writeFileSync(INVALID_SETTINGS_PATH, '{"toolVisibility":"sometimes","rpc":{"enabled":"yes"}}\n');
-writeFileSync(LOW_LIMITS_SETTINGS_PATH, '{"continuationLimits":{"automaticTurns":3,"noProgressTurns":3}}\n');
-writeFileSync(ONE_TURN_LIMIT_SETTINGS_PATH, '{"continuationLimits":{"automaticTurns":1,"noProgressTurns":null}}\n');
-writeFileSync(UNLIMITED_SETTINGS_PATH, '{"continuationLimits":{"automaticTurns":null,"noProgressTurns":3}}\n');
+writeFileSync(INVALID_SETTINGS_PATH, '{"checkpointMinutes":0,"rpc":{"enabled":"yes"}}\n');
 
 afterAll(() => rmSync(GOAL_SETTINGS_DIRECTORY, { recursive: true, force: true }));
 
@@ -63,16 +57,10 @@ export type StoredGoal = {
   startedAt?: number;
   updatedAt?: number;
   iteration?: number;
-  tokenBudget?: number;
-  tokensUsed?: number;
   timeUsedSeconds?: number;
-  baselineTokens?: number;
   activeStartedAt?: number;
-  automaticModelTurns?: number;
-  toolFreeRepeatCount?: number;
-  lastToolFreeOutputFingerprint?: string;
+  toolFreeRuns?: number;
   safetyPauseCause?: string;
-  safetyResetPending?: boolean;
   waiting?: { reason: string; resumeAt?: number };
 };
 
@@ -130,15 +118,11 @@ export function requireGoalTool(mock: ReturnType<typeof createMockPi>, name: str
 }
 
 export function restoreGoalForTest(
-  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited",
+  status: "active" | "paused" | "blocked" | "usage_limited",
   overrides: {
-    tokenBudget?: number;
-    tokensUsed?: number;
     timeUsedSeconds?: number;
-    automaticModelTurns?: number;
-    toolFreeRepeatCount?: number;
-    lastToolFreeOutputFingerprint?: string;
-    safetyPauseCause?: "continuation_limit" | "no_progress";
+    toolFreeRuns?: number;
+    safetyPauseCause?: "no_progress";
   } = {},
   contextOverrides: Record<string, unknown> = {},
 ) {
@@ -149,13 +133,8 @@ export function restoreGoalForTest(
     startedAt: 1,
     updatedAt: 2,
     iteration: 3,
-    tokenBudget: overrides.tokenBudget ?? 10,
-    tokensUsed: overrides.tokensUsed ?? 5,
     timeUsedSeconds: overrides.timeUsedSeconds ?? 4,
-    baselineTokens: 0,
-    automaticModelTurns: overrides.automaticModelTurns ?? 0,
-    toolFreeRepeatCount: overrides.toolFreeRepeatCount ?? 0,
-    lastToolFreeOutputFingerprint: overrides.lastToolFreeOutputFingerprint,
+    toolFreeRuns: overrides.toolFreeRuns ?? 0,
     safetyPauseCause: overrides.safetyPauseCause,
   };
   return restoreStoredGoalForTest(sessionGoal, [], contextOverrides);
@@ -222,9 +201,7 @@ export function findPersistedGoal(mock: ReturnType<typeof createMockPi>, status:
 
 export function pickSafetyState(goal: StoredGoal) {
   return {
-    automaticModelTurns: goal.automaticModelTurns,
-    toolFreeRepeatCount: goal.toolFreeRepeatCount,
-    lastToolFreeOutputFingerprint: goal.lastToolFreeOutputFingerprint,
+    toolFreeRuns: goal.toolFreeRuns,
     safetyPauseCause: goal.safetyPauseCause,
   };
 }

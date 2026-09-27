@@ -8,7 +8,7 @@ import {
 } from "../src/goal.js";
 import {
   assistantUsageEntry,
-  LOW_LIMITS_SETTINGS_PATH,
+  DEFAULT_SETTINGS_PATH,
   lastGoalStatus,
   nonGoalContractSentMessages,
   requireGoalTool,
@@ -434,7 +434,7 @@ test("a follow-up wakes exhausted provider recovery and can enter a new wait", a
 });
 
 test("automatic ownership survives agent_start retry without before_agent_start", async () => {
-  const retried = await startGoalForTest({}, "finish", LOW_LIMITS_SETTINGS_PATH);
+  const retried = await startGoalForTest({}, "finish", DEFAULT_SETTINGS_PATH);
   await retried.mock.events.get("agent_end")?.[0]?.(
     { messages: [{ role: "assistant", stopReason: "stop", content: [] }] },
     retried.ctx,
@@ -467,7 +467,6 @@ test("automatic ownership survives agent_start retry without before_agent_start"
     },
     retried.ctx,
   );
-  assert.equal(requireLastGoal(retried.mock).automaticModelTurns, 1);
 
   retried.mock.events.get("agent_start")?.[0]?.({}, retried.ctx);
   retried.mock.events.get("turn_end")?.[0]?.(
@@ -481,7 +480,6 @@ test("automatic ownership survives agent_start retry without before_agent_start"
   await retried.mock.events.get("agent_settled")?.[0]?.({}, retried.ctx);
 
   assert.equal(lastGoalStatus(retried.mock), "active");
-  assert.equal(requireLastGoal(retried.mock).automaticModelTurns, 2);
 });
 
 test("stale exhausted recovery cannot block a replacement goal", async () => {
@@ -506,33 +504,6 @@ test("stale exhausted recovery cannot block a replacement goal", async () => {
   await replaced.mock.events.get("agent_settled")?.[0]?.({}, replaced.ctx);
   assert.equal(requireLastGoal(replaced.mock).id, replacement.id);
   assert.equal(lastGoalStatus(replaced.mock), "active");
-});
-
-test("an exhausted goal does not remain active for a retryable provider error", async () => {
-  const branch: Record<string, unknown>[] = [];
-  const budgeted = await startGoalForTest(
-    { sessionManager: { getBranch: () => branch, getEntries: () => branch } },
-    "--tokens 10 finish",
-  );
-  branch.push(assistantUsageEntry({ totalTokens: 12 }));
-  await budgeted.mock.events.get("agent_end")?.[0]?.(
-    {
-      messages: [{ role: "assistant", stopReason: "error", errorMessage: "WebSocket closed 1000" }],
-    },
-    budgeted.ctx,
-  );
-
-  assert.equal(lastGoalStatus(budgeted.mock), "budget_limited");
-  assert.equal(nonGoalContractSentMessages(budgeted.mock).length, 0);
-  assert.deepEqual(
-    await budgeted.mock.events.get("session_before_compact")?.[0]?.(
-      { reason: "overflow", willRetry: true },
-      budgeted.ctx,
-    ),
-    { cancel: true },
-  );
-  await budgeted.mock.events.get("agent_settled")?.[0]?.({}, budgeted.ctx);
-  assert.equal(budgeted.mock.sentUserMessages.length, 1);
 });
 
 test("agent_end keeps Codex retry-hinted errors active without stale tool blocking", async () => {
@@ -763,16 +734,8 @@ test("findFinalAssistantMessage returns the last assistant with a known stop rea
       errorMessage: "context_length_exceeded",
       provider: "openai",
       model: "gpt-test",
-      usage: {
-        input: 10,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 12,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
       timestamp: 123,
     },
   );
-  assert.equal(validateObjective(""), "Usage: /goal <goal_to_complete>");
+  assert.equal(validateObjective(""), "Usage: /goal <objective>");
 });

@@ -96,16 +96,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
           details: completionDetails(goal, requestedGoalId, summary),
         };
       }
-      const completingDuringBudgetWrapUp = runtime.hasActiveBudgetWrapUp();
-      if (completedGoal.status === "active" && !runtime.ownsWorkflow(completedGoal)) {
-        const rejection = "Goal completion rejected: active Goal no longer owns its workflow.";
-        notifyTerminal(ctx.ui, rejection, "warning");
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
-      }
-      if (!runtime.canRecordGoalUsage() && !completingDuringBudgetWrapUp) {
+      if (!runtime.runOwnsGoal()) {
         const rejection = "Goal completion rejected: current run does not own the active goal.";
         notifyTerminal(ctx.ui, rejection, "warning");
         return {
@@ -117,20 +108,12 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       if (staleGoalRejection) {
         const rejection = `Goal completion rejected: ${staleGoalRejection}.`;
         notifyTerminal(ctx.ui, rejection, "warning");
-        if (completingDuringBudgetWrapUp) {
-          runtime.recordGoalUsage(completedGoal, ctx);
-          runtime.persistGoal(completedGoal);
-          runtime.updateStatus(ctx, completedGoal);
-          runtime.clearBudgetWrapUp();
-        }
-
         return {
           content: toolContent(rejection),
           details: completionDetails(goal, requestedGoalId, summary),
-          terminate: completingDuringBudgetWrapUp || undefined,
         };
       }
-      if (completedGoal.status !== "active" && !completingDuringBudgetWrapUp) {
+      if (completedGoal.status !== "active") {
         const rejection = `Goal completion rejected: goal is ${completedGoal.status}, not active.`;
         notifyTerminal(ctx.ui, rejection, "warning");
 
@@ -148,24 +131,17 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
             ? "summary says the goal is not complete"
             : undefined;
       if (rejectionReason) {
-        runtime.recordGoalUsage(completedGoal, ctx);
-        runtime.persistGoal(completedGoal);
-        runtime.updateStatus(ctx, completedGoal);
         const rejection = `Goal completion rejected: ${rejectionReason}.`;
         notifyTerminal(ctx.ui, rejection, "warning");
-        if (completingDuringBudgetWrapUp) runtime.clearBudgetWrapUp();
-
         return {
           content: toolContent(rejection),
           details: completionDetails(goal, requestedGoalId, summary),
-          terminate: completingDuringBudgetWrapUp || undefined,
         };
       }
 
       runtime.clearGoalWaitTimer();
       runtime.activeGoal = transitionGoal(completedGoal, "complete");
-      runtime.setCompletionSummary(runtime.activeGoal.id, summary);
-      runtime.recordGoalUsage(runtime.activeGoal, ctx);
+      runtime.recordGoalTime(runtime.activeGoal, false);
       runtime.persistGoal(runtime.activeGoal);
 
       ctx.ui.setStatus(STATUS_KEY, formatStatus(runtime.activeGoal));
@@ -225,15 +201,12 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       };
 
       if (!blockedGoal) return reject("no active goal");
-      if (!runtime.canRecordGoalUsage()) {
-        return reject("current run does not own the active goal");
-      }
+      if (!runtime.runOwnsGoal()) return reject("current run does not own the active goal");
       const staleGoalRejection = goalIdRejectionReason(blockedGoal, requestedGoalId);
       if (staleGoalRejection) return reject(staleGoalRejection);
       if (blockedGoal.status !== "active") {
         return reject(`goal is ${blockedGoal.status}, not active`);
       }
-      if (!runtime.ownsWorkflow(blockedGoal)) return reject("active Goal no longer owns its workflow");
       if (!reason) return reject("reason is empty");
       if (reason.length > MAX_BLOCKER_REASON_LENGTH) return reject("reason is too long");
       if (!evidence) return reject("evidence is empty");
@@ -296,15 +269,12 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       };
 
       if (!activeGoal) return reject("no active goal");
-      if (!runtime.canRecordGoalUsage()) {
-        return reject("current run does not own the active goal");
-      }
+      if (!runtime.runOwnsGoal()) return reject("current run does not own the active goal");
       const staleGoalRejection = goalIdRejectionReason(activeGoal, requestedGoalId);
       if (staleGoalRejection) return reject(staleGoalRejection);
       if (activeGoal.status !== "active") {
         return reject(`goal is ${activeGoal.status}, not active`);
       }
-      if (!runtime.ownsWorkflow(activeGoal)) return reject("active Goal no longer owns its workflow");
       if (activeGoal.waiting) return reject("goal is already waiting");
       if (!reason) return reject("reason is empty");
       if (reason.length > MAX_GOAL_WAIT_REASON_LENGTH) return reject("reason is too long");
