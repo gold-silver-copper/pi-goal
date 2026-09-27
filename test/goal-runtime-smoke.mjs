@@ -462,6 +462,65 @@ async function interruptedResumeScenario() {
   }
 }
 
+function goalIdFrom(context) {
+  const modelContext = context.messages.map(modelMessageText).join("\n");
+  return [...modelContext.matchAll(/<goal_id>\s*([^<\s]+)\s*<\/goal_id>/g)].at(-1)?.[1];
+}
+
+async function statusMidRunScenario() {
+  const harness = await createHarness([fauxAssistantMessage("x".repeat(200)), completionResponse], {
+    tokensPerSecond: 100,
+    tokenSize: { min: 1, max: 1 },
+  });
+  try {
+    await harness.session.prompt("/goal keep streaming while the user checks in");
+    await waitFor(() => harness.session.isStreaming, "goal turn streaming");
+    // The TUI sends text typed during streaming through prompt() with steer behavior;
+    // extension commands run immediately.
+    await harness.session.prompt("/goal status", { streamingBehavior: "steer" });
+    assert.equal(harness.session.isStreaming, true, "/goal status must not abort the run");
+    assert.equal(persistedGoalStatus(harness.session), "active");
+    await waitFor(() => harness.faux.state.callCount === 2, "the run continuing to completion");
+    await harness.session.agent.waitForIdle();
+    assert.equal(persistedGoalStatus(harness.session), null);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
+async function progressAndDeviationsScenario() {
+  const harness = await createHarness([
+    (context) =>
+      fauxAssistantMessage([
+        fauxToolCall("goal_progress", { goal_id: goalIdFrom(context), note: "Plan: probe, then finish." }),
+        fauxToolCall("probe", {}),
+      ]),
+    (context) =>
+      fauxAssistantMessage(
+        fauxToolCall("goal_complete", {
+          goal_id: goalIdFrom(context),
+          summary: "Probed and finished.",
+          deviations: "Warming the cache was not done: it would change generated worlds.",
+        }),
+      ),
+  ]);
+  try {
+    await harness.session.prompt("/goal probe and finish");
+    await waitFor(() => harness.faux.state.callCount === 2, "progress, probe and completion");
+    await harness.session.agent.waitForIdle();
+    const history = persistedGoalHistory(harness.session);
+    assert.ok(history.some((goal) => goal.progress?.at(-1)?.note === "Plan: probe, then finish."));
+    assert.equal(harness.lifecycleEvents.filter((event) => event === "probe_execute").length, 1);
+    assert.equal(persistedGoalStatus(harness.session), null, "the goal completed");
+    const completion = harness.session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "goal_complete",
+    );
+    assert.match(modelMessageText(completion ?? {}), /Deviations:\nWarming the cache was not done/u);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
 async function manualCompactionScenario() {
   const now = Date.now();
   const harness = await createHarness(
@@ -526,7 +585,9 @@ await busyEditOwnershipScenario();
 await pauseScenario();
 await staleBlockedToolAbortScenario();
 await interruptedResumeScenario();
+await statusMidRunScenario();
+await progressAndDeviationsScenario();
 await manualCompactionScenario();
 console.log(
-  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, Esc then 'continue' resume, and manual compaction passed",
+  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, Esc then 'continue' resume, /goal status mid-run, progress notes with deviations, and manual compaction passed",
 );

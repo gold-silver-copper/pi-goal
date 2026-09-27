@@ -7,6 +7,13 @@ import { type GoalWait, normalizeGoalWait } from "./wait.js";
 export const GOAL_STATE_ENTRY_TYPE = "goal-state";
 const MAX_OBJECTIVE_LENGTH = 4_000;
 export const MAX_STOP_DETAIL_LENGTH = 300;
+export const MAX_PROGRESS_NOTES = 20;
+export const MAX_PROGRESS_NOTE_LENGTH = 300;
+
+export interface ProgressNote {
+  at: number;
+  note: string;
+}
 const PAUSE_REASONS = new Set<PauseReason>(["user", "interrupted", "error", "no_progress", "time_limit", "tools_unavailable"]);
 
 export interface ActiveGoal {
@@ -25,6 +32,12 @@ export interface ActiveGoal {
   stopDetail?: string;
   /** Set when the objective is a prompt file. */
   objectiveFile?: ObjectiveFile;
+  /** The last goal_progress notes, oldest first. */
+  progress?: ProgressNote[];
+  /** Active seconds at the last progress note or reminder. */
+  progressCheckpointSeconds?: number;
+  /** Active seconds when the goal was last resumed after its time limit; the limit counts from here. */
+  timeLimitBaseSeconds?: number;
   waiting?: GoalWait;
 }
 
@@ -111,8 +124,25 @@ export function normalizeLoadedGoal(value: unknown): ActiveGoal | undefined {
         ? value.stopDetail.slice(0, MAX_STOP_DETAIL_LENGTH)
         : undefined,
     objectiveFile: normalizeObjectiveFile(value.objectiveFile),
+    progress: normalizeProgress(value.progress),
+    progressCheckpointSeconds: isNonNegativeFiniteNumber(value.progressCheckpointSeconds)
+      ? value.progressCheckpointSeconds
+      : undefined,
+    timeLimitBaseSeconds: isNonNegativeFiniteNumber(value.timeLimitBaseSeconds) ? value.timeLimitBaseSeconds : undefined,
     waiting,
   };
+}
+
+function normalizeProgress(value: unknown): ProgressNote[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const notes = value
+    .filter(
+      (item): item is ProgressNote =>
+        isRecord(item) && isNonNegativeFiniteNumber(item.at) && typeof item.note === "string" && item.note.trim() !== "",
+    )
+    .map(({ at, note }) => ({ at, note: note.slice(0, MAX_PROGRESS_NOTE_LENGTH) }))
+    .slice(-MAX_PROGRESS_NOTES);
+  return notes.length > 0 ? notes : undefined;
 }
 
 function normalizePauseReason(value: Record<string, unknown>, status: GoalStatus): PauseReason | undefined {

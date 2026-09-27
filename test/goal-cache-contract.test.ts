@@ -402,7 +402,7 @@ test("continuation and wait resume preserve the post-activation request prefix",
     sessionManager: { getBranch: () => branch, getEntries: () => branch },
   });
   await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
-  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
+  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_progress", "goal_resume"]);
 
   await mock.commands.get("goal")?.handler("preserve the provider prefix", context.ctx);
   const kickoffPrompt = mock.sentUserMessages.at(-1)?.text ?? "";
@@ -414,7 +414,7 @@ test("continuation and wait resume preserve the post-activation request prefix",
     customType: kickoffContract.customType,
     content: kickoffContract.content,
   });
-  assert.deepEqual(kickoff.activeTools, ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
+  assert.deepEqual(kickoff.activeTools, ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_progress", "goal_resume"]);
 
   branch.push(assistantUsageEntry({ totalTokens: 500 }));
   await mock.events.get("agent_end")?.[0]?.(

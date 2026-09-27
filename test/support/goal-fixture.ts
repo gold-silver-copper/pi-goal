@@ -25,9 +25,15 @@ export function registerGoal(pi: Parameters<typeof goal>[0]) {
   registerGoalWithSettingsPath(pi, DEFAULT_SETTINGS_PATH);
 }
 
-export function registerGoalWithSettingsPath(pi: Parameters<typeof goal>[0], goalSettingsPath: string) {
-  pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait", "goal_resume"])]);
-  goal(pi, { settingsPath: goalSettingsPath });
+type GoalOptions = NonNullable<Parameters<typeof goal>[1]>;
+
+export function registerGoalWithSettingsPath(
+  pi: Parameters<typeof goal>[0],
+  goalSettingsPath: string,
+  options: Omit<GoalOptions, "settingsPath"> = {},
+) {
+  pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait", "goal_progress", "goal_resume"])]);
+  goal(pi, { ...options, settingsPath: goalSettingsPath });
 }
 export type GoalTool = {
   renderResult?: (
@@ -61,7 +67,10 @@ export type StoredGoal = {
   activeStartedAt?: number;
   toolFreeRuns?: number;
   pauseReason?: string;
-  waiting?: { reason: string; resumeAt?: number };
+  waiting?: { reason: string; resumeAt?: number; wakeWhen?: { pid?: number; command?: string; intervalSeconds?: number } };
+  progress?: Array<{ at: number; note: string }>;
+  progressCheckpointSeconds?: number;
+  timeLimitBaseSeconds?: number;
 };
 
 function assertObjectiveTrustBoundary(prompt: string) {
@@ -152,6 +161,7 @@ export function restoreStoredGoalForTest(
   extraEntries: Record<string, unknown>[] = [],
   contextOverrides: Record<string, unknown> = {},
   settingsPath?: string,
+  options: Omit<GoalOptions, "settingsPath"> = {},
 ) {
   const branch = [
     {
@@ -162,8 +172,7 @@ export function restoreStoredGoalForTest(
     ...extraEntries,
   ];
   const mock = createMockPi();
-  if (settingsPath) registerGoalWithSettingsPath(mock.pi, settingsPath);
-  else registerGoal(mock.pi);
+  registerGoalWithSettingsPath(mock.pi, settingsPath ?? DEFAULT_SETTINGS_PATH, options);
   const context = createMockContext({
     ...contextOverrides,
     sessionManager: { getBranch: () => branch, getEntries: () => branch },
@@ -176,9 +185,10 @@ export async function startGoalForTest(
   overrides: Record<string, unknown> = {},
   command = "finish",
   settingsPath = DEFAULT_SETTINGS_PATH,
+  options: Omit<GoalOptions, "settingsPath"> = {},
 ) {
   const mock = createMockPi();
-  registerGoalWithSettingsPath(mock.pi, settingsPath);
+  registerGoalWithSettingsPath(mock.pi, settingsPath, options);
   const context = createMockContext(overrides);
   mock.events.get("session_start")?.[0]?.({}, context.ctx);
   await mock.commands.get("goal")?.handler(command, context.ctx);

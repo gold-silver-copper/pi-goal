@@ -175,7 +175,7 @@ test("resume stays stopped when another policy hides terminal tools", async () =
 test("resume succeeds after the restrictive policy restores terminal tools", async () => {
   const restored = restoreGoalForTest("paused");
   restored.mock.rawPi.setActiveTools(["read", "bash"]);
-  restored.mock.rawPi.setActiveTools(["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
+  restored.mock.rawPi.setActiveTools(["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_progress", "goal_resume"]);
 
   await restored.mock.commands.get("goal")?.handler("resume", restored.ctx);
 
@@ -187,6 +187,7 @@ test("resume succeeds after the restrictive policy restores terminal tools", asy
     "goal_complete",
     "goal_blocked",
     "goal_wait",
+    "goal_progress",
     "goal_resume",
   ]);
 });

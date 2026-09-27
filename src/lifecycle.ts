@@ -14,12 +14,14 @@ import {
   isRetryableGoalInterruption,
   isUsageLimitedGoalInterruption,
   isUserInterruption,
+  PROGRESS_REMINDER_TEXT,
   resetGoalSafetyEpoch,
   STATUS_KEY,
   type StatusContext,
   transitionGoal,
   truncateNotification,
 } from "./runtime.js";
+import { parseResetTime } from "./reset-time.js";
 import { readGoalSettings } from "./settings.js";
 
 interface GoalLifecycleOptions {
@@ -55,6 +57,7 @@ export function registerGoalLifecycle(
     for (const warning of settingsResult.warnings) notifyTerminal(ctx.ui, `pi-goal: ${warning}`, "warning");
     const loaded = loadGoalStateFromSession(ctx);
     runtime.activeGoal = loaded;
+    runtime.startClock(ctx);
 
     if (isActiveGoal(loaded)) {
       runtime.recordGoalTime(loaded);
@@ -84,6 +87,7 @@ export function registerGoalLifecycle(
   pi.on("session_shutdown", (_event, ctx) => {
     sessionActive = false;
     runtime.replaceSession();
+    runtime.stopClock();
     runtime.clearGoalWaitTimer();
     if (runtime.activeGoal) {
       if (runtime.activeGoal.status === "active") runtime.recordGoalTime(runtime.activeGoal, false);
@@ -265,6 +269,15 @@ export function registerGoalLifecycle(
     };
   });
 
+  // After 45 minutes of active time without a goal_progress note, the next tool result
+  // carries one reminder line. Nothing is aborted and no steering message is sent.
+  pi.on("tool_result", (event) => {
+    if (!sessionActive) return;
+    if (event.toolName.startsWith("goal_") || !runtime.runOwnsGoal(runtime.activeGoal?.id)) return;
+    if (!runtime.takeProgressReminder()) return;
+    return { content: [...event.content, { type: "text" as const, text: PROGRESS_REMINDER_TEXT }] };
+  });
+
   pi.on("tool_execution_end", (_event, ctx) => {
     if (!sessionActive) return;
     if (!isActiveGoal(runtime.activeGoal)) return;
@@ -389,7 +402,14 @@ export function registerGoalLifecycle(
       }
       runtime.clearGoalRecoveryForGoal(goalId);
       if (isUsageLimitedGoalInterruption(finalAssistant)) {
-        stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "usage_limited");
+        // A usage limit that says when it resets waits for the reset instead of stopping.
+        const reset = parseResetTime(finalAssistant.errorMessage ?? "");
+        if (reset !== undefined) {
+          runtime.cancelContinuationWork();
+          runtime.waitForReset(ctx, runtime.activeGoal, reset, finalAssistant.errorMessage ?? "");
+        } else {
+          stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "usage_limited");
+        }
       } else {
         stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "paused", "error");
       }

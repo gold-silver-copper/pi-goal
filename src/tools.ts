@@ -9,10 +9,12 @@ import {
 import { Markdown } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { notifyTerminal, safeTerminalText } from "./errors.js";
+import { MAX_PROGRESS_NOTE_LENGTH } from "./persistence.js";
 import {
   formatStatus,
   GOAL_BLOCKED_TOOL,
   GOAL_COMPLETE_TOOL,
+  GOAL_PROGRESS_TOOL,
   GOAL_RESUME_TOOL,
   GOAL_WAIT_TOOL,
   type GoalRuntime,
@@ -24,6 +26,11 @@ import {
 } from "./runtime.js";
 import {
   createGoalWait,
+  DEFAULT_WAKE_INTERVAL_SECONDS,
+  describeWakeWhen,
+  MAX_WAKE_COMMAND_LENGTH,
+  MIN_WAKE_INTERVAL_SECONDS,
+  parseWakeWhen,
   MAX_GOAL_WAIT_DELAY_MS,
   MAX_GOAL_WAIT_REASON_LENGTH,
   MIN_GOAL_WAIT_DELAY_MS,
@@ -115,6 +122,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       }
 
       runtime.clearGoalWaitTimer();
+      runtime.notifyDesktop(ctx, "Goal complete", completedGoal);
       runtime.activeGoal = transitionGoal(completedGoal, "complete");
       runtime.recordGoalTime(runtime.activeGoal, false);
       runtime.persistGoal(runtime.activeGoal);
@@ -201,7 +209,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
   const goalWaitTool = defineTool({
     name: GOAL_WAIT_TOOL,
     label: "Goal Wait",
-    description: `Keep an active /goal quiet only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and progress depends on an arranged external wake event or one safety deadline. Tool visibility alone does not activate Goal mode. Call goal_wait alone. Requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms. Never call for ordinary unfinished work.`,
+    description: `Keep an active /goal quiet only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and progress depends on something slow or on the user. With wake_when the extension watches a process id or re-runs a check command and wakes the goal when the process exits or the command exits 0; use it instead of sleep loops. Without wake_when the user's next message wakes the goal. Tool visibility alone does not activate Goal mode. Call goal_wait alone. Requests below ${MIN_GOAL_WAIT_DELAY_MS}ms are clamped to ${MIN_GOAL_WAIT_DELAY_MS}ms. Never call for ordinary unfinished work.`,
     parameters: Type.Object({
       goal_id: Type.String({
         minLength: 1,
@@ -217,8 +225,32 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
         Type.Integer({
           minimum: 1,
           maximum: MAX_GOAL_WAIT_DELAY_MS,
-          description: `Optional safety deadline in milliseconds that requests one continuation if no wake message arrives. Values below ${MIN_GOAL_WAIT_DELAY_MS} are accepted but clamped to ${MIN_GOAL_WAIT_DELAY_MS}.`,
+          description: `Optional safety deadline in milliseconds that requests one continuation if nothing else wakes the goal. Values below ${MIN_GOAL_WAIT_DELAY_MS} are accepted but clamped to ${MIN_GOAL_WAIT_DELAY_MS}.`,
         }),
+      ),
+      wake_when: Type.Optional(
+        Type.Object(
+          {
+            pid: Type.Optional(
+              Type.Integer({ minimum: 1, description: "Wake when this process no longer exists (for example a background build)." }),
+            ),
+            command: Type.Optional(
+              Type.String({
+                minLength: 1,
+                maxLength: MAX_WAKE_COMMAND_LENGTH,
+                description:
+                  "A shell command run in the working directory; the goal wakes when it exits 0. Keep it cheap, e.g. `gh run view 123 --json status -q .status | grep -qx completed`.",
+              }),
+            ),
+            interval_s: Type.Optional(
+              Type.Number({
+                minimum: 1,
+                description: `Seconds between command runs (default ${DEFAULT_WAKE_INTERVAL_SECONDS}, at least ${MIN_WAKE_INTERVAL_SECONDS}).`,
+              }),
+            ),
+          },
+          { description: "What the extension watches to wake the goal. Give exactly one of pid or command." },
+        ),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -227,6 +259,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
       const reason = typeof params.reason === "string" ? params.reason.trim() : "";
       const resumeAfterMs = typeof params.resume_after_ms === "number" ? params.resume_after_ms : undefined;
+      const wake = params.wake_when === undefined ? undefined : parseWakeWhen(params.wake_when);
       const reject = (rejectionReason: string) => {
         const rejection = `goal_wait rejected: ${rejectionReason}.`;
         notifyTerminal(ctx.ui, rejection, "warning");
@@ -252,19 +285,21 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       ) {
         return reject(`resume_after_ms must be a whole number from 1 to ${MAX_GOAL_WAIT_DELAY_MS}`);
       }
+      if (typeof wake === "string") return reject(wake);
 
       const { requestedMs, effectiveMs } = resolveGoalWaitDelay(resumeAfterMs);
-      const waiting = createGoalWait(reason, resumeAfterMs);
+      const waiting = createGoalWait(reason, resumeAfterMs, wake);
       const waitingGoal = runtime.enterGoalWait(ctx, activeGoal.id, waiting);
       if (!waitingGoal) return reject("active goal changed before waiting transition");
       const clamped = requestedMs !== undefined && effectiveMs !== requestedMs;
       notifyTerminal(ctx.ui, `Goal waiting: ${truncateNotification(reason)}`, "info");
+      if (!wake && effectiveMs === undefined) runtime.notifyDesktop(ctx, `Waiting on you: ${reason}`, waitingGoal);
+      const lines = [`Goal waiting: ${reason}`];
+      if (wake) lines.push(`Wakes when ${describeWakeWhen(wake)}.`);
+      else if (effectiveMs === undefined) lines.push("The user's next message wakes the goal.");
+      if (clamped) lines.push(`Requested resume_after_ms ${requestedMs} was clamped to ${effectiveMs}.`);
       return {
-        content: toolContent(
-          clamped
-            ? `Goal waiting: ${reason}\nRequested resume_after_ms ${requestedMs} was clamped to ${effectiveMs}.`
-            : `Goal waiting: ${reason}`,
-        ),
+        content: toolContent(lines.join("\n")),
         details: waitDetails(
           goal,
           requestedGoalId,
@@ -275,6 +310,45 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
         ),
         terminate: true,
       };
+    },
+  });
+
+  const goalProgressTool = defineTool({
+    name: GOAL_PROGRESS_TOOL,
+    label: "Goal Progress",
+    description:
+      "Record a short progress note for an active /goal when the latest effective Goal contract says Goal mode is active and supplies the matching goal_id: once at the start with the plan, after each milestone, and at least every 45 minutes. The user sees the latest note in the status line and /goal status instead of interrupting you. It does not end the turn and can run alongside other tools. Tool visibility alone does not activate Goal mode.",
+    parameters: Type.Object({
+      goal_id: Type.String({
+        minLength: 1,
+        maxLength: MAX_GOAL_ID_LENGTH,
+        description: "The exact goal_id shown in the current active /goal prompt.",
+      }),
+      note: Type.String({
+        minLength: 1,
+        maxLength: MAX_PROGRESS_NOTE_LENGTH,
+        description: "One or two sentences: what is done, what is next, anything slow or surprising.",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const goal = runtime.activeGoal;
+      const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
+      const note = typeof params.note === "string" ? params.note.replace(/\s+/gu, " ").trim() : "";
+      const details = { goal_id: requestedGoalId.slice(0, MAX_GOAL_ID_LENGTH), note: note.slice(0, MAX_PROGRESS_NOTE_LENGTH) };
+      const reject = (reason: string) => {
+        const rejection = `goal_progress rejected: ${reason}.`;
+        return { content: toolContent(rejection), details };
+      };
+      if (!goal) return reject("no active goal");
+      const staleGoalRejection = goalIdRejectionReason(goal, requestedGoalId);
+      if (staleGoalRejection) return reject(staleGoalRejection);
+      if (goal.status !== "active") return reject(`goal is ${goal.status}, not active`);
+      if (!note) return reject("note is empty");
+      if (note.length > MAX_PROGRESS_NOTE_LENGTH) {
+        return reject(`note is too long (${note.length}/${MAX_PROGRESS_NOTE_LENGTH} characters)`);
+      }
+      if (!runtime.recordProgress(ctx, note)) return reject("the goal changed before the note was recorded");
+      return { content: toolContent("Progress noted."), details };
     },
   });
 
@@ -329,6 +403,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
   pi.registerTool(goalCompleteTool);
   pi.registerTool(goalBlockedTool);
   pi.registerTool(goalWaitTool);
+  pi.registerTool(goalProgressTool);
   pi.registerTool(goalResumeTool);
 }
 
