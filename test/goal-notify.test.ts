@@ -46,18 +46,18 @@ async function endRun(started: Started, assistant: Record<string, unknown>) {
   await started.mock.events.get("agent_settled")?.[0]?.({}, started.ctx);
 }
 
-test("completion notifies with the project and the objective in the text", async () => {
+test("completion notifies with the project and the objective in the title", async () => {
   const { started, notices } = await start();
   await tool(started, "goal_complete", { summary: "Done and verified." });
   assert.deepEqual(notices, [
-    { title: `pi-goal · ${basename(process.cwd())}`, message: "Goal complete — ship the release notes" },
+    { title: `pi-goal · ${basename(process.cwd())} · ship the release notes`, message: "Goal complete" },
   ]);
 });
 
 test("a blocked goal, an error pause and a wait for the user notify", async () => {
   const blocked = await start();
   await tool(blocked.started, "goal_blocked", { reason: "needs registry credentials", evidence: "401 twice" });
-  assert.match(blocked.notices.at(-1)?.message ?? "", /^Goal blocked: needs registry credentials — /u);
+  assert.match(blocked.notices.at(-1)?.message ?? "", /^Goal blocked: needs registry credentials$/u);
 
   const errored = await start();
   await endRun(errored.started, { stopReason: "error", errorMessage: "Permission denied by remote service" });
@@ -65,7 +65,7 @@ test("a blocked goal, an error pause and a wait for the user notify", async () =
 
   const waiting = await start();
   await tool(waiting.started, "goal_wait", { reason: "please publish fuxix 0.1.1" });
-  assert.match(waiting.notices.at(-1)?.message ?? "", /^Waiting on you: please publish fuxix 0\.1\.1 — /u);
+  assert.match(waiting.notices.at(-1)?.message ?? "", /^Waiting on you: please publish fuxix 0\.1\.1$/u);
 });
 
 test("waits with a wake condition or a deadline do not notify, and neither do pauses the user caused", async () => {
@@ -111,7 +111,7 @@ test("checkpoints notify every checkpointMinutes of active time with the last no
   await vi.advanceTimersByTimeAsync(2 * 60_000);
   const recorded = notices as Notice[];
   assert.equal(recorded.length, 1);
-  assert.match(recorded[0]?.message ?? "", /^Active 30m; last note: schema migrated — ship the release notes$/u);
+  assert.match(recorded[0]?.message ?? "", /^Active 30m; last note: schema migrated$/u);
   await vi.advanceTimersByTimeAsync(29 * 60_000);
   assert.equal(recorded.length, 2);
   assert.match(recorded[1]?.message ?? "", /^Active 1h0m/u);

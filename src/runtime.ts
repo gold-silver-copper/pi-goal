@@ -733,9 +733,10 @@ export class GoalRuntime {
     if (!this.settings.notifications) return;
     if (ctx.mode !== "tui" && !(ctx.mode === undefined && ctx.hasUI)) return;
     try {
-      const title = notificationText(`pi-goal · ${basename(ctx.cwd)}`, 60);
-      const objective = goal ? notificationText(goal.text, 80) : "";
-      this.notifier(title, notificationText(objective ? `${event} — ${objective}` : event, 200));
+      // Several goals run at once, so the title names the project and the objective.
+      const objective = goal ? ` · ${notificationText(goal.text, 50)}` : "";
+      const title = notificationText(`pi-goal · ${basename(ctx.cwd)}${objective}`, 90);
+      this.notifier(title, notificationText(event, 200));
     } catch {
       // Notifications are best-effort.
     }

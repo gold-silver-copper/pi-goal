@@ -88,7 +88,7 @@ The tools are always registered; the goal contract says when Goal mode is active
   - pauses you did not cause (error, no progress, time limit)
   - checkpoints
 
-  The title names the project directory, since you may run several goals at once.
+  The title names the project directory and the objective, since you may run several goals at once.
 
 ## Settings
 
