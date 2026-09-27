@@ -254,10 +254,6 @@ export class GoalRuntime {
     if (this.agentRunGoalId !== undefined) this.agentRunOrigin = "manual";
   }
 
-  isAutomaticRunForGoal(goalId: string) {
-    return this.agentRunGoalId === goalId && this.agentRunOrigin === "automatic";
-  }
-
   /** Checkpoint active elapsed time for a goal the current run may act for. */
   recordGoalTime(goal: ActiveGoal, checkpointActiveTime = goal.status === "active" && !goal.waiting) {
     if (!this.runOwnsGoal(goal.id)) return false;
