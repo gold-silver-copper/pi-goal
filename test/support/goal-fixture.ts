@@ -33,7 +33,7 @@ export function registerGoalWithSettingsPath(
   options: Omit<GoalOptions, "settingsPath"> = {},
 ) {
   pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait", "goal_progress", "goal_resume"])]);
-  goal(pi, { ...options, settingsPath: goalSettingsPath });
+  return goal(pi, { ...options, settingsPath: goalSettingsPath });
 }
 export type GoalTool = {
   renderResult?: (
@@ -172,13 +172,15 @@ export function restoreStoredGoalForTest(
     ...extraEntries,
   ];
   const mock = createMockPi();
-  registerGoalWithSettingsPath(mock.pi, settingsPath ?? DEFAULT_SETTINGS_PATH, options);
+  // The session already holds the restored goal-state entry; later appends follow it.
+  mock.entries.push({ customType: "goal-state", data: { goal: structuredClone(sessionGoal) } });
+  const runtime = registerGoalWithSettingsPath(mock.pi, settingsPath ?? DEFAULT_SETTINGS_PATH, options);
   const context = createMockContext({
     ...contextOverrides,
     sessionManager: { getBranch: () => branch, getEntries: () => branch },
   });
   mock.events.get("session_start")?.[0]?.({}, context.ctx);
-  return { mock, ...context, sessionGoal };
+  return { mock, runtime, ...context, sessionGoal };
 }
 
 export async function startGoalForTest(
@@ -188,11 +190,17 @@ export async function startGoalForTest(
   options: Omit<GoalOptions, "settingsPath"> = {},
 ) {
   const mock = createMockPi();
-  registerGoalWithSettingsPath(mock.pi, settingsPath, options);
+  const runtime = registerGoalWithSettingsPath(mock.pi, settingsPath, options);
   const context = createMockContext(overrides);
   mock.events.get("session_start")?.[0]?.({}, context.ctx);
   await mock.commands.get("goal")?.handler(command, context.ctx);
-  return { mock, ...context };
+  return { mock, runtime, ...context };
+}
+
+/** Put the live goal's no-progress count at `count`, as that many tool-free continuations would. */
+export function seedToolFreeRuns(started: { runtime: { activeGoal?: { toolFreeRuns: number } } }, count: number) {
+  assert.ok(started.runtime.activeGoal, "expected a live goal");
+  started.runtime.activeGoal.toolFreeRuns = count;
 }
 
 export function requireLastGoal(mock: ReturnType<typeof createMockPi>) {

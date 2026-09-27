@@ -10,6 +10,7 @@ import {
   restoreStoredGoalForTest,
   settingsPath,
   startGoalForTest,
+  seedToolFreeRuns,
 } from "./support/goal-fixture.js";
 
 beforeEach(() => {
@@ -225,7 +226,7 @@ test("RPC input and custom follow-up boundaries wake waiting goals", async () =>
 test("user resume clears waiting without rotating the goal or resetting safety", async () => {
   const waiting = await startGoalForTest();
   const goal = requireLastGoal(waiting.mock);
-  goal.toolFreeRuns = 2;
+  seedToolFreeRuns(waiting, 2);
   await requireGoalTool(waiting.mock, "goal_wait").execute(
     "wait-resume",
     { goal_id: goal.id, reason: "Waiting for approval" },
@@ -694,5 +695,5 @@ test("waiting excludes idle wall time from active elapsed accounting", async () 
 
   await vi.advanceTimersByTimeAsync(2_000);
   await waiting.mock.commands.get("goal")?.handler("status", waiting.ctx);
-  assert.equal(requireLastGoal(waiting.mock).timeUsedSeconds, 7);
+  assert.equal(waiting.runtime.activeGoal?.timeUsedSeconds, 7);
 });

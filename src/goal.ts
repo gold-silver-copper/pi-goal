@@ -9,11 +9,13 @@ interface GoalOptions extends GoalRuntimeOptions {
   settingsPath?: string;
 }
 
+/** Registers Goal mode. Returns the runtime so tests can inspect live state; Pi ignores it. */
 export default function goal(pi: ExtensionAPI, options: GoalOptions = {}) {
   const runtime = new GoalRuntime(pi, options);
   registerGoalTools(pi, runtime);
   registerGoalCommand(pi, new GoalCommandController(runtime));
   registerGoalLifecycle(pi, runtime, options);
+  return runtime;
 }
 
 export { formatDuration } from "./accounting.js";

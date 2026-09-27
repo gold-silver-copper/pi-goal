@@ -10,8 +10,10 @@ import { type ObjectiveFile, refreshObjectiveFile } from "./objective-file.js";
 import {
   type ActiveGoal,
   GOAL_STATE_ENTRY_TYPE,
+  INLINE_OBJECTIVE_LENGTH,
   MAX_PROGRESS_NOTES,
   MAX_STOP_DETAIL_LENGTH,
+  persistenceKey,
   serializeGoalState,
 } from "./persistence.js";
 import { buildContinuePrompt, type GoalStatus, type PauseReason, stoppedGoalDescription } from "./prompts.js";
@@ -106,6 +108,8 @@ export const PROGRESS_REMINDER_SECONDS = 45 * 60;
 export const PROGRESS_REMINDER_TEXT = "No goal_progress note for 45 min.";
 /** A reset time from the provider gets this much slack before the goal wakes. */
 const RESET_SLACK_MS = 60_000;
+/** Elapsed active time alone is written at most this often. */
+const TIME_PERSIST_SECONDS = 5 * 60;
 
 export interface GoalRuntimeOptions {
   notifier?: DesktopNotifier;
@@ -176,6 +180,8 @@ export class GoalRuntime {
   private checkpoint?: { goalId: string; index: number };
   private readonly notifier: DesktopNotifier;
   private readonly clockTickMs: number;
+  /** What the session already holds for the current goal, so unchanged state is not appended again. */
+  private persisted?: { goalId: string; key: string; text: string; activeSeconds: number };
 
   readonly pi: ExtensionAPI;
 
@@ -1075,12 +1081,32 @@ export class GoalRuntime {
     return undefined;
   }
 
-  persistGoal(goal: ActiveGoal) {
-    this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, serializeGoalState(goal));
+  /**
+   * Append a goal-state entry when something significant changed, when five more
+   * minutes of active time have passed, or when forced (shutdown). A long objective is
+   * written once per goal id.
+   */
+  persistGoal(goal: ActiveGoal, force = false) {
+    const key = persistenceKey(goal);
+    const seconds = activeSeconds(goal);
+    const last = this.persisted?.goalId === goal.id ? this.persisted : undefined;
+    if (!force && last?.key === key && seconds - last.activeSeconds < TIME_PERSIST_SECONDS) return;
+    const omitText = last?.text === goal.text && goal.text.length > INLINE_OBJECTIVE_LENGTH;
+    // A snapshot, like the JSON Pi writes: later changes to the live goal must not alter it.
+    this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, structuredClone(serializeGoalState(goal, omitText)));
+    this.persisted = { goalId: goal.id, key, text: goal.text, activeSeconds: seconds };
+  }
+
+  /** The session already holds this goal's state (it was just restored from it). */
+  markPersisted(goal: ActiveGoal | undefined) {
+    this.persisted = goal
+      ? { goalId: goal.id, key: persistenceKey(goal), text: goal.text, activeSeconds: activeSeconds(goal) }
+      : undefined;
   }
 
   clearPersistedGoal() {
     this.pi.appendEntry(GOAL_STATE_ENTRY_TYPE, serializeGoalState(undefined));
+    this.persisted = undefined;
   }
 
   clearActiveGoal(ctx: StatusContext) {

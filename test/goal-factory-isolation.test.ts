@@ -205,6 +205,9 @@ test("tool lifecycle persistence stays on the owning goal instance", async () =>
   const rootEntriesBefore = root.entries.length;
   const childEntriesBefore = child.entries.length;
 
+  // Elapsed time alone is written every five minutes of active time.
+  const later = Date.now() + 6 * 60_000;
+  vi.spyOn(Date, "now").mockImplementation(() => later);
   root.events.get("tool_execution_end")?.[0]?.({}, rootContext.ctx);
   assert.equal(root.entries.length, rootEntriesBefore + 1);
   assert.equal(child.entries.length, childEntriesBefore);

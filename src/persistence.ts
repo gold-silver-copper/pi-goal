@@ -41,8 +41,11 @@ export interface ActiveGoal {
   waiting?: GoalWait;
 }
 
+/** Objectives longer than this are stored once per goal id; later entries leave `text` out. */
+export const INLINE_OBJECTIVE_LENGTH = 200;
+
 export interface GoalStateEntryData {
-  goal: ActiveGoal | null;
+  goal: ActiveGoal | Omit<ActiveGoal, "text"> | null;
 }
 
 interface SessionEntry {
@@ -61,27 +64,69 @@ interface SessionContext {
 
 const STORED_STATUSES = new Set(["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"]);
 
-export function serializeGoalState(goal: ActiveGoal | undefined): GoalStateEntryData {
-  return { goal: goal ?? null };
+export function serializeGoalState(goal: ActiveGoal | undefined, omitText = false): GoalStateEntryData {
+  if (!goal) return { goal: null };
+  if (!omitText) return { goal };
+  const { text: _text, ...rest } = goal;
+  return { goal: rest };
+}
+
+/**
+ * What must reach the session when it changes. Elapsed time, the iteration count and
+ * timestamps are left out: they are written with the next significant change, every
+ * five minutes of active time, and at shutdown.
+ */
+export function persistenceKey(goal: ActiveGoal) {
+  return JSON.stringify([
+    goal.id,
+    goal.text.length,
+    goal.status,
+    goal.pauseReason,
+    goal.stopDetail,
+    goal.waiting,
+    goal.objectiveFile,
+    goal.toolFreeRuns,
+    goal.progress?.length,
+    goal.progress?.at(-1)?.at,
+    goal.progressCheckpointSeconds,
+    goal.timeLimitBaseSeconds,
+  ]);
 }
 
 /** Restore the latest `goal-state` entry on the branch. Reads entries written by this package and by pi-goal 0.54.8. */
 export function loadGoalStateFromSession(ctx: SessionContext): ActiveGoal | undefined {
+  return restoreGoalState(ctx).goal;
+}
+
+/**
+ * The goal to restore, and the state the session actually holds for it (before an
+ * Esc-caused 0.54.8 stop is reclassified), so an unchanged goal is not written again.
+ */
+export function restoreGoalState(ctx: SessionContext): { goal?: ActiveGoal; stored?: ActiveGoal } {
   const entries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
   let latest: SessionEntry | undefined;
   let assistantBeforeLatest: SessionEntry["message"];
   let lastAssistant: SessionEntry["message"];
+  const objectives = new Map<string, string>();
   for (const entry of entries) {
     if (entry.type === "message" && entry.message?.role === "assistant") lastAssistant = entry.message;
     if (entry.type === "custom" && entry.customType === GOAL_STATE_ENTRY_TYPE) {
       latest = entry;
       assistantBeforeLatest = lastAssistant;
+      const stored = isRecord(entry.data) && isRecord(entry.data.goal) ? entry.data.goal : undefined;
+      if (typeof stored?.id === "string" && typeof stored.text === "string") objectives.set(stored.id, stored.text);
     }
   }
-  if (!latest || !isRecord(latest.data)) return undefined;
-  const goal = normalizeLoadedGoal(latest.data.goal);
-  if (!goal || goal.status === "complete") return undefined;
-  return reclassifyInterruptedGoal(goal, assistantBeforeLatest);
+  if (!latest || !isRecord(latest.data)) return {};
+  const stored = latest.data.goal;
+  // A long objective is written once; later entries for the same goal id leave it out.
+  const withText =
+    isRecord(stored) && stored.text === undefined && typeof stored.id === "string"
+      ? { ...stored, text: objectives.get(stored.id) }
+      : stored;
+  const goal = normalizeLoadedGoal(withText);
+  if (!goal || goal.status === "complete") return {};
+  return { goal: reclassifyInterruptedGoal(goal, assistantBeforeLatest), stored: goal };
 }
 
 /**

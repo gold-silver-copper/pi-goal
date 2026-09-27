@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
   DEFAULT_SETTINGS_PATH,
+  seedToolFreeRuns,
   lastGoalStatus,
   requireLastGoal,
   startGoalForTest,
@@ -23,7 +24,7 @@ test("assistant toolCall blocks reset no-progress even when tool_call hook never
     );
     await active.mock.events.get("agent_settled")?.[0]?.({}, active.ctx);
   }
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 2);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 2);
 
   const prompt = active.mock.sentUserMessages.at(-1)?.text ?? "";
   active.mock.events.get("before_agent_start")?.[0]?.({ prompt, systemPrompt: "base" }, active.ctx);
@@ -40,7 +41,7 @@ test("assistant toolCall blocks reset no-progress even when tool_call hook never
     active.ctx,
   );
   assert.equal(lastGoalStatus(active.mock), "active");
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
 });
 
 test("a preceding input transform preserves automatic continuation ownership", async () => {
@@ -99,26 +100,24 @@ test("a preceding input transform preserves Goal prompt ownership", async () => 
   const active = await startGoalForTest({}, "finish", DEFAULT_SETTINGS_PATH);
   const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
   const transformed = `Respond briefly:\n\n${kickoff}`;
-  const safety = requireLastGoal(active.mock);
-  safety.toolFreeRuns = 2;
+  seedToolFreeRuns(active, 2);
 
   active.mock.events.get("input")?.[0]?.({ source: "extension", text: transformed }, active.ctx);
   active.mock.events.get("before_agent_start")?.[0]?.({ prompt: transformed, systemPrompt: "base" }, active.ctx);
 
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
 });
 
 test("a following prefix transform preserves Goal prompt ownership", async () => {
   const active = await startGoalForTest({}, "finish", DEFAULT_SETTINGS_PATH);
   const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
   const transformed = `Respond briefly:\n\n${kickoff}`;
-  const safety = requireLastGoal(active.mock);
-  safety.toolFreeRuns = 2;
+  seedToolFreeRuns(active, 2);
 
   active.mock.events.get("input")?.[0]?.({ source: "extension", text: kickoff }, active.ctx);
   active.mock.events.get("before_agent_start")?.[0]?.({ prompt: transformed, systemPrompt: "base" }, active.ctx);
 
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
 });
 
 test("a following marker quote or appended text cannot claim a Goal prompt", async () => {
@@ -127,8 +126,7 @@ test("a following marker quote or appended text cannot claim a Goal prompt", asy
     const kickoff = active.mock.sentUserMessages.at(-1)?.text ?? "";
     const marker = kickoff.match(/<!-- pi-goal-prompt:[^>]+-->/u)?.[0] ?? "";
     assert.notEqual(marker, "");
-    const safety = requireLastGoal(active.mock);
-    safety.toolFreeRuns = 2;
+    seedToolFreeRuns(active, 2);
     const external =
       variant === "quoted-marker"
         ? `External monitor quoted ${marker}`
@@ -137,7 +135,7 @@ test("a following marker quote or appended text cannot claim a Goal prompt", asy
     active.mock.events.get("input")?.[0]?.({ source: "extension", text: kickoff }, active.ctx);
     active.mock.events.get("before_agent_start")?.[0]?.({ prompt: external, systemPrompt: "base" }, active.ctx);
 
-    assert.equal(requireLastGoal(active.mock).toolFreeRuns, 2, variant);
+    assert.equal(active.runtime.activeGoal?.toolFreeRuns, 2, variant);
   }
 });
 
@@ -180,19 +178,18 @@ test("queued user follow-up resets safety only when its message starts", async (
   await active.mock.events.get("agent_settled")?.[0]?.({}, active.ctx);
   const continuation = active.mock.sentUserMessages.at(-1)?.text ?? "";
   active.mock.events.get("before_agent_start")?.[0]?.({ prompt: continuation, systemPrompt: "base" }, active.ctx);
-  const safety = requireLastGoal(active.mock);
-  safety.toolFreeRuns = 2;
+  seedToolFreeRuns(active, 2);
   active.mock.events.get("input")?.[0]?.(
     { source: "interactive", text: "user follow-up", streamingBehavior: "followUp" },
     active.ctx,
   );
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 2);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 2);
 
   active.mock.events.get("message_start")?.[0]?.(
     { message: { role: "user", content: [{ type: "text", text: "user follow-up" }] } },
     active.ctx,
   );
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
   active.mock.events.get("turn_end")?.[0]?.(
     { message: { role: "assistant", stopReason: "stop", content: [] }, toolResults: [] },
     active.ctx,
@@ -209,8 +206,7 @@ test("expanded queued follow-up claims manual ownership at its delivery boundary
   await active.mock.events.get("agent_settled")?.[0]?.({}, active.ctx);
   const continuation = active.mock.sentUserMessages.at(-1)?.text ?? "";
   active.mock.events.get("before_agent_start")?.[0]?.({ prompt: continuation, systemPrompt: "base" }, active.ctx);
-  const safety = requireLastGoal(active.mock);
-  safety.toolFreeRuns = 2;
+  seedToolFreeRuns(active, 2);
   active.mock.events.get("input")?.[0]?.(
     { source: "interactive", text: "/skill:review", streamingBehavior: "followUp" },
     active.ctx,
@@ -230,7 +226,7 @@ test("expanded queued follow-up claims manual ownership at its delivery boundary
     active.ctx,
   );
 
-  assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+  assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
 });
 
 describe("owned goal lifecycle boundaries do not consume a transformed follow-up", () => {
@@ -238,8 +234,7 @@ describe("owned goal lifecycle boundaries do not consume a transformed follow-up
     test(order, async () => {
       const active = await startGoalForTest({}, "finish", DEFAULT_SETTINGS_PATH);
       const ownedPrompt = active.mock.sentUserMessages.at(-1)?.text ?? "";
-      const safety = requireLastGoal(active.mock);
-      safety.toolFreeRuns = 2;
+      seedToolFreeRuns(active, 2);
       active.mock.events.get("input")?.[0]?.(
         { source: "interactive", text: "/skill:review", streamingBehavior: "followUp" },
         active.ctx,
@@ -260,9 +255,8 @@ describe("owned goal lifecycle boundaries do not consume a transformed follow-up
         startMessage();
       }
 
-      assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
-      const afterOwnedPrompt = requireLastGoal(active.mock);
-      afterOwnedPrompt.toolFreeRuns = 2;
+      assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
+      seedToolFreeRuns(active, 2);
 
       active.mock.events.get("message_start")?.[0]?.(
         {
@@ -273,7 +267,7 @@ describe("owned goal lifecycle boundaries do not consume a transformed follow-up
         },
         active.ctx,
       );
-      assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+      assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
     });
   }
 });
@@ -288,8 +282,7 @@ describe("owned continuation lifecycle boundaries do not consume a transformed f
       );
       await active.mock.events.get("agent_settled")?.[0]?.({}, active.ctx);
       const continuation = active.mock.sentUserMessages.at(-1)?.text ?? "";
-      const safety = requireLastGoal(active.mock);
-      safety.toolFreeRuns = 2;
+      seedToolFreeRuns(active, 2);
       active.mock.events.get("input")?.[0]?.(
         { source: "interactive", text: "/skill:review", streamingBehavior: "followUp" },
         active.ctx,
@@ -310,7 +303,7 @@ describe("owned continuation lifecycle boundaries do not consume a transformed f
         startMessage();
       }
 
-      assert.equal(requireLastGoal(active.mock).toolFreeRuns, 2);
+      assert.equal(active.runtime.activeGoal?.toolFreeRuns, 2);
       active.mock.events.get("message_start")?.[0]?.(
         {
           message: {
@@ -320,7 +313,7 @@ describe("owned continuation lifecycle boundaries do not consume a transformed f
         },
         active.ctx,
       );
-      assert.equal(requireLastGoal(active.mock).toolFreeRuns, 0);
+      assert.equal(active.runtime.activeGoal?.toolFreeRuns, 0);
     });
   }
 });

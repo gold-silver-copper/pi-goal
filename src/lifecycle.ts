@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyTerminal } from "./errors.js";
 import { GOAL_CONTRACT_MESSAGE_TYPE, goalContractFor, isGoalContextContract, reconcileGoalContract } from "./goal-contract.js";
-import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
+import { type ActiveGoal, loadGoalStateFromSession, restoreGoalState } from "./persistence.js";
 import {
   type AssistantMessageLike,
   abortCurrentTurn,
@@ -55,8 +55,9 @@ export function registerGoalLifecycle(
     const settingsResult = readGoalSettings(options.settingsPath);
     runtime.settings = settingsResult.settings;
     for (const warning of settingsResult.warnings) notifyTerminal(ctx.ui, `pi-goal: ${warning}`, "warning");
-    const loaded = loadGoalStateFromSession(ctx);
+    const { goal: loaded, stored } = restoreGoalState(ctx);
     runtime.activeGoal = loaded;
+    runtime.markPersisted(stored);
     runtime.startClock(ctx);
 
     if (isActiveGoal(loaded)) {
@@ -91,7 +92,7 @@ export function registerGoalLifecycle(
     runtime.clearGoalWaitTimer();
     if (runtime.activeGoal) {
       if (runtime.activeGoal.status === "active") runtime.recordGoalTime(runtime.activeGoal, false);
-      runtime.persistGoal(runtime.activeGoal);
+      runtime.persistGoal(runtime.activeGoal, true);
     }
     runtime.clearContinuationTracking();
     runtime.clearPendingGoalPrompts();

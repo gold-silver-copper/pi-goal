@@ -98,8 +98,9 @@ test("legacy active-time state migrates without counting offline or reload time"
 
   now += 2_000;
   await legacy.mock.commands.get("goal")?.handler("", legacy.ctx);
-  assert.equal(requireLastGoal(legacy.mock).timeUsedSeconds, 6);
-  assert.equal(requireLastGoal(legacy.mock).activeStartedAt, now);
+  // /goal status checkpoints the live clock; elapsed time alone is not written yet.
+  assert.equal(legacy.runtime.activeGoal?.timeUsedSeconds, 6);
+  assert.equal(legacy.runtime.activeGoal?.activeStartedAt, now);
 
   now += 3_000;
   legacy.mock.events.get("session_shutdown")?.[0]?.({}, legacy.ctx);
@@ -111,7 +112,7 @@ test("legacy active-time state migrates without counting offline or reload time"
   const reloaded = restoreStoredGoalForTest(suspended);
   now += 2_000;
   await reloaded.mock.commands.get("goal")?.handler("", reloaded.ctx);
-  assert.equal(requireLastGoal(reloaded.mock).timeUsedSeconds, 11);
+  assert.equal(reloaded.runtime.activeGoal?.timeUsedSeconds, 11);
 });
 
 test("goal notifications sanitize terminal controls without mutating the objective", async () => {
