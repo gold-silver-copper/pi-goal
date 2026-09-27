@@ -1,0 +1,10 @@
+[
+  { "tools": [
+      { "name": "goal_progress", "args": { "goal_id": "$GOAL_ID", "note": "Plan: build the widget, wait for build.flag, finish." } },
+      { "name": "bash", "args": { "command": "sleep 60" } }
+  ] },
+  { "tools": [ { "name": "goal_resume", "args": { "goal_id": "$GOAL_ID" } } ] },
+  { "tools": [ { "name": "goal_progress", "args": { "goal_id": "$GOAL_ID", "note": "Resumed; waiting for the build flag." } } ] },
+  { "tools": [ { "name": "goal_wait", "args": { "goal_id": "$GOAL_ID", "reason": "Waiting for the build to write build.flag", "wake_when": { "command": "test -f build.flag && echo build finished", "interval_s": 30 } } } ] },
+  { "tools": [ { "name": "goal_complete", "args": { "goal_id": "$GOAL_ID", "summary": "Widget built; build.flag confirmed by the wake check.", "deviations": "Skipped the long benchmark: the prompt does not require it." } } ] }
+]

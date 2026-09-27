@@ -1,4 +1,22 @@
-# @narumitw/pi-goal
+# pi-goal
+
+## 0.55.0 — fork of @narumitw/pi-goal 0.54.8
+
+Forked from `github.com/narumiruna/pi-extensions`, `packages/pi-goal`, at `9058c15011ed250e69b89dbd680d785a82deb87d`, and reworked after an audit of 66 goals across 30 sessions.
+
+- Esc pauses a goal (`interrupted`) instead of blocking it, including when the provider reports the abort as an error. A paused goal keeps its objective in a paused contract, and the new `goal_resume` tool lets the agent resume it when the user says "continue".
+- `goal_complete` loses the contradictory-summary regex and gains `deviations`.
+- The Goal-mode rules are rewritten for proportionate verification and live only in the goal contract.
+- New `goal_progress` tool: notes in the status line and `/goal status`, with a reminder after 45 quiet minutes.
+- `goal_wait` takes `wake_when` (a pid or a check command polled by the extension).
+- Rate and usage limits that name their reset time wait until then.
+- Checkpoint notifications, an optional active-time limit, and desktop notifications replace the response-count limit.
+- `/goal <path>` and `/goal execute <path>` record the prompt file and say when it changes.
+- Goal state is written only when it changes.
+- Removed: token budgets, managed-run RPC, the workflow mutex, legacy queue and global-state migrations, the goal menu and settings UI, the output-fingerprint no-progress guard, and `goal_blocked`'s `repeated_turns`.
+- pi loads `src/index.ts` directly; the generated `dist/` runtime and its builder are gone.
+
+# @narumitw/pi-goal (upstream history)
 
 ## 0.54.8
 
