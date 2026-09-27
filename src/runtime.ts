@@ -1154,6 +1154,7 @@ export class GoalRuntime {
         // session replacement or reload before this timer fires.
       }
     }, 8_000);
+    this.completionStatusTimer.unref?.();
   }
 
   clearCompletionStatusTimer() {

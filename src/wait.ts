@@ -112,6 +112,8 @@ export class GoalWaitTimer {
       this.timer = undefined;
       onDue();
     }, delay);
+    // A deadline hours away must not keep a finished pi process (print mode, tests) alive.
+    this.timer.unref?.();
   }
 }
 

@@ -521,6 +521,37 @@ async function progressAndDeviationsScenario() {
   }
 }
 
+async function rateLimitResetScenario() {
+  const fiveHourLimit =
+    "Claude rate limit (five_hour) — resets 1:10:00 AM: You've hit your session limit · resets 1:10am (America/Los_Angeles)";
+  const failure = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: fiveHourLimit });
+  const harness = await createHarness([failure, failure, failure], {}, undefined, undefined, {
+    compaction: { enabled: false },
+    retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+  });
+  try {
+    await harness.session.prompt("/goal finish after the limit resets");
+    await harness.session.agent.waitForIdle();
+    await waitFor(() => persistedGoalState(harness.session)?.goal?.waiting?.resumeAt !== undefined, "the reset wait");
+    assert.equal(harness.faux.state.callCount, 3, "pi retried until its retries ran out");
+    const goal = persistedGoalState(harness.session)?.goal;
+    assert.equal(goal.status, "active");
+    const resumeAt = goal.waiting.resumeAt;
+    assert.ok(resumeAt > Date.now() && resumeAt - Date.now() <= 24 * 3_600_000 + 60_000);
+    const wallClock = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(resumeAt));
+    assert.equal(wallClock, "01:11:00", "reset time (1:10 AM Los Angeles) plus 60 s");
+    assert.match(goal.waiting.reason, /^Provider limit \(Claude rate limit/u);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
 async function manualCompactionScenario() {
   const now = Date.now();
   const harness = await createHarness(
@@ -587,7 +618,8 @@ await staleBlockedToolAbortScenario();
 await interruptedResumeScenario();
 await statusMidRunScenario();
 await progressAndDeviationsScenario();
+await rateLimitResetScenario();
 await manualCompactionScenario();
 console.log(
-  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, Esc then 'continue' resume, /goal status mid-run, progress notes with deviations, and manual compaction passed",
+  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, Esc then 'continue' resume, /goal status mid-run, progress notes with deviations, five-hour rate-limit reset wait, and manual compaction passed",
 );
