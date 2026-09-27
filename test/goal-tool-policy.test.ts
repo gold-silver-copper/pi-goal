@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
+import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import {
   assistantUsageEntry,
   GOAL_SETTINGS_DIRECTORY,

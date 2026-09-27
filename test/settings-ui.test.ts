@@ -3,7 +3,7 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
 import { test } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
+import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import { GoalCommandController } from "../src/commands.js";
 import { createGoal, GoalRuntime } from "../src/runtime.js";
 import { DEFAULT_GOAL_SETTINGS, type GoalSettings } from "../src/settings.js";

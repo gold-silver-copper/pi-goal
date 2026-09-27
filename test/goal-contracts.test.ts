@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
+import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import {
   assistantUsageTokens,
   buildGoalSystemPrompt,

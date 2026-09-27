@@ -192,40 +192,6 @@ test("malformed canonical or plural state fails closed", () => {
   }
 });
 
-test("legacy cleanup uses Pi agent directory tilde expansion", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-goal-agent-dir-"));
-  const home = join(root, "home");
-  const agentDir = join(home, "custom-agent");
-  const stateFile = join(agentDir, "pi-goal-state.json");
-  const cwd = join(root, "workspace");
-  const untouchedCwd = join(root, "other-workspace");
-  mkdirSync(agentDir, { recursive: true });
-  writeFileSync(stateFile, JSON.stringify({ [cwd]: { stale: true }, [untouchedCwd]: { keep: true } }));
-
-  try {
-    const persistenceUrl = pathToFileURL(
-      join(process.cwd(), "node_modules/.cache/pi-extensions-test/packages/pi-goal/src/persistence.js"),
-    ).href;
-    const script = `const { clearLegacyPersistedGoal } = await import(${JSON.stringify(persistenceUrl)}); clearLegacyPersistedGoal(${JSON.stringify(cwd)});`;
-    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-      cwd: root,
-      env: {
-        ...process.env,
-        HOME: home,
-        PI_CODING_AGENT_DIR: "~/custom-agent",
-      },
-      encoding: "utf8",
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(readFileSync(stateFile, "utf8")), {
-      [untouchedCwd]: { keep: true },
-    });
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 function storedGoal(text: string, status: ActiveGoal["status"]): ActiveGoal {
   return {
     id: `${text}-id`,

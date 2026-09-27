@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createMockPi } from "../../../test/support.js";
+import { createMockPi } from "./support/pi-mock.js";
 import { assertGoalToolsAvailable, goalToolsAvailable } from "../src/tool-policy.js";
 
 test("Goal tool availability requires completion and blocker tools without mutating the active set", () => {

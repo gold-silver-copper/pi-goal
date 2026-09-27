@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll } from "vitest";
-import { createMockContext, createMockPi } from "../../../../test/support.js";
+import { createMockContext, createMockPi } from "./pi-mock.js";
 import goal from "../../src/goal.js";
 
 export const STALE_GOAL_TOOL_REASON = "Blocked stale /goal tool call after the goal stopped or was interrupted.";

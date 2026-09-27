@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createMockContext, createMockPi } from "../../../test/support.js";
+import { createMockContext, createMockPi } from "./support/pi-mock.js";
 import { registerGoalCommand } from "../src/command-registration.js";
 import { GoalCommandController } from "../src/commands.js";
 import { GoalRuntime } from "../src/runtime.js";

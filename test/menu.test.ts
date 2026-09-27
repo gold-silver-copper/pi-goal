@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
 import { test } from "vitest";
-import { createMockContext } from "../../../test/support.js";
+import { createMockContext } from "./support/pi-mock.js";
 import { buildGoalMenuState, GOAL_MENU_ACTIONS, safeGoalMenuText, showGoalManager } from "../src/menu.js";
 import type { ActiveGoal } from "../src/persistence.js";
 import { createGoal, transitionGoal } from "../src/runtime.js";

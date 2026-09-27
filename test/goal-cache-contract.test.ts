@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
-import { builtinTool, createMockContext, createMockPi } from "../../../test/support.js";
+import { builtinTool, createMockContext, createMockPi } from "./support/pi-mock.js";
 import { createGoalContextContract } from "../src/goal-contract.js";
 import {
   assertHardenedGoalPrompt,
