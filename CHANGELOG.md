@@ -15,6 +15,9 @@ Forked from `github.com/narumiruna/pi-extensions`, `packages/pi-goal`, at `9058c
 - Goal state is written only when it changes.
 - Removed: token budgets, managed-run RPC, the workflow mutex, legacy queue and global-state migrations, the goal menu and settings UI, the output-fingerprint no-progress guard, and `goal_blocked`'s `repeated_turns`.
 - pi loads `src/index.ts` directly; the generated `dist/` runtime and its builder are gone.
+- Fuzzing: a lifecycle fuzzer over random event, command and tool sequences; parser properties; and an opt-in replay of real sessions. It found two restore bugs, both fixed:
+  - a malformed session entry crashed `session_start`
+  - the 0.54.8 Esc reclassification also fired on goals this version had blocked, when the blocking run then ended aborted
 
 # @narumitw/pi-goal (upstream history)
 

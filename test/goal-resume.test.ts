@@ -209,3 +209,23 @@ test("restoring a 0.54.8 goal stopped by Esc brings it back paused as interrupte
   assert.equal(reallyBlocked?.status, "blocked");
   assert.equal(reallyBlocked?.pauseReason, undefined);
 });
+
+test("a goal this version blocked stays blocked on restore even if the run then ended aborted", () => {
+  // Found by the lifecycle fuzzer: goal_blocked, then the run ends aborted, then another write.
+  const blocked = {
+    id: "g-new",
+    text: "execute prompt.md",
+    status: "blocked",
+    startedAt: 1,
+    updatedAt: 2,
+    iteration: 0,
+    timeUsedSeconds: 1,
+    toolFreeRuns: 0,
+    stopDetail: "needs a token",
+  };
+  const restored = loadGoalStateFromSession(
+    sessionWith(blocked, { stopReason: "error", errorMessage: "This operation was aborted" }),
+  );
+  assert.equal(restored?.status, "blocked");
+  assert.equal(restored?.stopDetail, "needs a token");
+});

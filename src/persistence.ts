@@ -109,7 +109,10 @@ export function restoreGoalState(ctx: SessionContext): { goal?: ActiveGoal; stor
   let lastAssistant: SessionEntry["message"];
   const objectives = new Map<string, string>();
   for (const entry of entries) {
-    if (entry.type === "message" && entry.message?.role === "assistant") lastAssistant = entry.message;
+    if (!isRecord(entry)) continue;
+    if (entry.type === "message" && isRecord(entry.message) && entry.message.role === "assistant") {
+      lastAssistant = entry.message;
+    }
     if (entry.type === "custom" && entry.customType === GOAL_STATE_ENTRY_TYPE) {
       latest = entry;
       assistantBeforeLatest = lastAssistant;
@@ -126,7 +129,10 @@ export function restoreGoalState(ctx: SessionContext): { goal?: ActiveGoal; stor
       : stored;
   const goal = normalizeLoadedGoal(withText);
   if (!goal || goal.status === "complete") return {};
-  return { goal: reclassifyInterruptedGoal(goal, assistantBeforeLatest), stored: goal };
+  // Only pi-goal 0.54.8 entries (they always carry tokensUsed) need the Esc reclassification;
+  // this version records a pause reason itself.
+  const written0548 = isRecord(stored) && typeof stored.tokensUsed === "number";
+  return { goal: written0548 ? reclassifyInterruptedGoal(goal, assistantBeforeLatest) : goal, stored: goal };
 }
 
 /**

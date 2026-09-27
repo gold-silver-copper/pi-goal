@@ -124,6 +124,19 @@ npm test               # vitest: unit and lifecycle tests against a mock pi
 npm run test:runtime   # a real pi AgentSession with pi-ai's faux provider
 ```
 
+**Fuzzing** (fast-check; small runs are part of `npm test`):
+
+- `npm run fuzz` runs two fuzzers:
+  - **The lifecycle fuzzer** drives 2,000 random sequences of up to 80 steps. The steps mix pi events, `/goal` commands, goal tool calls with current, stale or missing ids, Esc, errors, compaction, reloads and time. After every step it checks that:
+    - at most one continuation goes out, only for the live active goal
+    - the state stays consistent
+    - goal tools are accepted only in legal states
+    - the session restores to the live goal
+    - each run starts with the right contract
+  - **The parser properties** cover reset times, `/goal` arguments, file objectives, `wake_when`, settings, saved goal state, and objectives that try to escape their prompt block.
+- `PI_GOAL_SESSIONS_DIR=~/.pi/agent/sessions npm run fuzz:replay` replays real session files through restore and `session_start`.
+- `FUZZ_SEED=<seed>` reproduces a failing lifecycle run.
+
 **Offline check in the real TUI:** `python3 test/fixtures/drive-tui.py [dir]` (needs `pip install pyte`) drives pi in a pty with the scripted offline provider in `test/fixtures/offline-provider.ts`. The run:
 
 1. starts `/goal execute prompt.md`
