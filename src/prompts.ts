@@ -2,6 +2,9 @@ import { MIN_GOAL_WAIT_DELAY_MS } from "./wait.js";
 
 export type GoalStatus = "active" | "paused" | "blocked" | "usage_limited" | "complete";
 
+/** Why a goal is paused. `user` is /goal pause; the others are set by the extension. */
+export type PauseReason = "user" | "interrupted" | "error" | "no_progress" | "time_limit" | "tools_unavailable";
+
 export interface GoalPromptContext {
   id: string;
   text: string;
@@ -11,6 +14,9 @@ export interface GoalPromptContext {
   updatedAt: number;
   timeUsedSeconds: number;
   activeStartedAt?: number;
+  pauseReason?: PauseReason;
+  /** Error text for an `error` pause, or the blocker reason for a blocked goal. */
+  stopDetail?: string;
 }
 
 export function buildGoalPrompt(goal: GoalPromptContext) {
@@ -39,6 +45,42 @@ export function buildGoalContextPrompt(goal: GoalPromptContext) {
 
 export function buildContinuePrompt(goal: GoalPromptContext, marker: string) {
   return `Continue the active /goal until it is complete:\n\n${goalContextBlock(goal)}\n\nThis is automatic continuation #${goal.iteration}. The full objective persists across turns; continue from the authoritative current state.\n\n${goalModeRules("this goal")}\n\n${continuationMarkerComment(marker)}`;
+}
+
+/** Contract text for a paused or blocked goal: keep it visible, but only work on it when the user asks. */
+export function buildPausedGoalContextPrompt(goal: GoalPromptContext) {
+  return [
+    `Goal mode is paused. The goal below is ${stoppedGoalDescription(goal)}.`,
+    "Its objective and goal_id stay current, but do not work on it unless the user's latest message asks you to continue it.",
+    `- If the user's latest message asks you to continue the goal, however it is worded ("continue", "go ahead", "keep going", "resume", "keep doing what you were doing"), call goal_resume with this goal_id first, then keep working under the Goal-mode rules.`,
+    "- If the latest message is about something else, answer it and leave the goal paused. Do not call goal_complete, goal_blocked or goal_wait while it is paused.",
+    "",
+    goalObjectiveTrustBoundary(),
+    "",
+    goalObjectiveBlock(goal),
+    "",
+    `<goal_id>\n${escapeXmlText(goal.id)}\n</goal_id>`,
+  ].join("\n");
+}
+
+export function stoppedGoalDescription(goal: Pick<GoalPromptContext, "status" | "pauseReason" | "stopDetail">) {
+  if (goal.status === "blocked") {
+    return goal.stopDetail ? `blocked: ${escapeXmlText(goal.stopDetail)}` : "blocked";
+  }
+  switch (goal.pauseReason) {
+    case "interrupted":
+      return "paused because the user interrupted the last run";
+    case "error":
+      return goal.stopDetail ? `paused after an agent error (${escapeXmlText(goal.stopDetail)})` : "paused after an agent error";
+    case "no_progress":
+      return "paused because automatic continuations stopped using tools";
+    case "time_limit":
+      return "paused because it reached its active-time limit";
+    case "tools_unavailable":
+      return "paused because goal tools were unavailable";
+    default:
+      return "paused by the user";
+  }
 }
 
 function goalContextBlock(goal: GoalPromptContext) {

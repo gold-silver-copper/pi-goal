@@ -13,6 +13,7 @@ import {
   formatStatus,
   GOAL_BLOCKED_TOOL,
   GOAL_COMPLETE_TOOL,
+  GOAL_RESUME_TOOL,
   GOAL_WAIT_TOOL,
   type GoalRuntime,
   goalIdRejectionReason,
@@ -310,9 +311,58 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
     },
   });
 
+  const goalResumeTool = defineTool({
+    name: GOAL_RESUME_TOOL,
+    label: "Goal Resume",
+    description:
+      "Resume a paused or blocked /goal only when the latest Goal contract says the goal is paused, supplies the matching goal_id, and the user's latest message asks you to continue it. Tool visibility alone does not activate Goal mode. Never call it on your own initiative or for a message about something else.",
+    parameters: Type.Object({
+      goal_id: Type.String({
+        minLength: 1,
+        maxLength: MAX_GOAL_ID_LENGTH,
+        description: "The exact goal_id shown in the paused Goal contract.",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const goal = runtime.activeGoal;
+      const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
+      const reject = (reason: string) => {
+        const rejection = `goal_resume rejected: ${reason}.`;
+        notifyTerminal(ctx.ui, rejection, "warning");
+        return { content: toolContent(rejection), details: { goal_id: requestedGoalId.slice(0, MAX_GOAL_ID_LENGTH) } };
+      };
+      if (!goal) return reject("no goal is set");
+      const staleGoalRejection = goalIdRejectionReason(goal, requestedGoalId);
+      if (staleGoalRejection) return reject(staleGoalRejection);
+      if (goal.status !== "paused" && goal.status !== "blocked") return reject(`goal is ${goal.status}, not paused or blocked`);
+      if (!runtime.directUserInput) {
+        return reject("only a message from the user in this run can resume the goal");
+      }
+      if (!runtime.goalToolsAvailable()) return reject("goal_complete is not an active tool");
+      const resumed = runtime.resumeStoppedGoal(ctx);
+      if (!resumed) return reject("the goal changed before it could resume");
+      notifyTerminal(ctx.ui, `Goal resumed: ${truncateNotification(resumed.text)}`, "info");
+      return {
+        content: toolContent(
+          [
+            "Goal resumed. Goal mode is active again for this objective:",
+            "",
+            `<goal_objective>\n${escapeXml(resumed.text)}\n</goal_objective>`,
+            "",
+            `goal_id: ${resumed.id}`,
+            "",
+            "The Goal-mode rules in the goal contract apply again. Continue from the current state of the work.",
+          ].join("\n"),
+        ),
+        details: { goal: resumed.text.slice(0, MAX_GOAL_TEXT_LENGTH), goal_id: resumed.id },
+      };
+    },
+  });
+
   pi.registerTool(goalCompleteTool);
   pi.registerTool(goalBlockedTool);
   pi.registerTool(goalWaitTool);
+  pi.registerTool(goalResumeTool);
 }
 
 interface GoalCompletionRenderResult {
@@ -394,4 +444,8 @@ function waitDetails(
     ...(resumeAfterMs === undefined ? {} : { resume_after_ms: resumeAfterMs }),
     ...(resumeAt === undefined ? {} : { resume_at: resumeAt }),
   };
+}
+
+function escapeXml(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

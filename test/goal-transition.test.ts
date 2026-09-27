@@ -4,7 +4,7 @@ import { createGoal, GoalRuntime } from "../src/runtime.js";
 import { createMockContext, createMockPi } from "./support/pi-mock.js";
 
 function runtime() {
-  const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait"] });
+  const mock = createMockPi({ activeTools: ["goal_complete", "goal_blocked", "goal_wait", "goal_resume"] });
   return { mock, state: new GoalRuntime(mock.pi) };
 }
 
@@ -56,21 +56,3 @@ test("stopped transition owner rejects stale goal ownership without side effects
   assert.equal(mock.entries.length, 0);
 });
 
-test("activation rollback stops the restored goal only while the failed activation owns state", () => {
-  const { state } = runtime();
-  const previous = createGoal("previous");
-  const failed = createGoal("failed activation");
-  state.activeGoal = failed;
-  const context = createMockContext();
-
-  const stopped = state.stopActiveGoal(context.ctx, {
-    kind: "activation_rollback",
-    expectedGoalId: failed.id,
-    restoreGoal: previous,
-    abortTurn: true,
-  });
-
-  assert.equal(stopped?.id, previous.id);
-  assert.equal(stopped?.status, "paused");
-  assert.equal(state.staleGoalToolCallsBlocked, true);
-});

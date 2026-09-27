@@ -20,21 +20,21 @@ test("parent and child stable Goal tool envelopes stay isolated", async () => {
   const rootContext = createMockContext();
   root.events.get("session_start")?.[0]?.({}, rootContext.ctx);
   await root.commands.get("goal")?.handler("parent objective", rootContext.ctx);
-  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 
   const child = createMockPi({
-    activeTools: ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"],
+    activeTools: ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"],
   });
   registerGoal(child.pi);
   const childContext = createMockContext();
   child.events.get("session_start")?.[0]?.({}, childContext.ctx);
-  assert.deepEqual(child.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
-  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(child.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
+  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 
   await child.commands.get("goal")?.handler("child objective", childContext.ctx);
-  assert.deepEqual(child.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(child.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
   await child.commands.get("goal")?.handler("clear", childContext.ctx);
-  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(root.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 });
 
 test("child session initialization does not erase or reroute the parent goal", async () => {

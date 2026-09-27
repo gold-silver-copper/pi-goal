@@ -250,7 +250,7 @@ async function runawayNoProgressScenario() {
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(harness.faux.state.callCount, 4);
     assert.equal(persistedGoalStatus(harness.session), "paused");
-    assert.equal(persistedGoalState(harness.session)?.goal?.safetyPauseCause, "no_progress");
+    assert.equal(persistedGoalState(harness.session)?.goal?.pauseReason, "no_progress");
     assert.equal(persistedGoalState(harness.session)?.goal?.toolFreeRuns, 3);
     assert.equal(
       harness.session.messages.map(userMessageText).filter((text) => text.includes("pi-goal-continuation:")).length,
@@ -399,7 +399,8 @@ async function staleBlockedToolAbortScenario() {
   try {
     await harness.session.prompt("/goal stale blocked-tool runtime smoke");
     await harness.session.agent.waitForIdle();
-    assert.equal(persistedGoalStatus(harness.session), "blocked");
+    assert.equal(persistedGoalStatus(harness.session), "paused");
+    assert.equal(persistedGoalState(harness.session)?.goal?.pauseReason, "error");
 
     // Bypass the normal input boundary to model provider-owned stale work that
     // arrives after the interrupted goal has already installed its tool guard.
@@ -408,6 +409,54 @@ async function staleBlockedToolAbortScenario() {
     assert.ok(harness.faux.state.callCount <= 3, "stale guard must allow at most one cleanup call");
     assert.equal(observedSignals.includes(false), false, "any cleanup call must inherit abort");
     assert.equal(harness.lifecycleEvents.filter((event) => event === "probe_execute").length, 0);
+  } finally {
+    await harness.cleanup();
+  }
+}
+
+function latestContract(context) {
+  return context.messages
+    .filter((message) => message.role === "user")
+    .map(modelMessageText)
+    .filter((text) => text.includes("This Goal contract supersedes"))
+    .at(-1);
+}
+
+async function interruptedResumeScenario() {
+  let pausedContract;
+  const harness = await createHarness([
+    // claude-bridge reports a user's Esc as an error with this text.
+    fauxAssistantMessage("", { stopReason: "error", errorMessage: "This operation was aborted" }),
+    (context) => {
+      pausedContract = latestContract(context);
+      const goalId = /<goal_id>\s*([^<\s]+)\s*<\/goal_id>/u.exec(pausedContract ?? "")?.[1];
+      assert.ok(goalId, "the paused contract must keep the goal_id");
+      return fauxAssistantMessage(fauxToolCall("goal_resume", { goal_id: goalId }));
+    },
+    completionResponse,
+  ]);
+  try {
+    await harness.session.prompt("/goal finish the task after an interruption");
+    await harness.session.agent.waitForIdle();
+    assert.equal(persistedGoalStatus(harness.session), "paused");
+    assert.equal(persistedGoalState(harness.session)?.goal?.pauseReason, "interrupted");
+
+    await harness.session.prompt("continue");
+    await waitFor(() => harness.faux.state.callCount === 3, "resume and completion");
+    await harness.session.agent.waitForIdle();
+    assert.match(pausedContract ?? "", /Goal mode is paused/u);
+    assert.match(pausedContract ?? "", /finish the task after an interruption/u);
+    assert.equal(persistedGoalStatus(harness.session), null, "the resumed goal completes");
+    const resumeResult = harness.session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "goal_resume",
+    );
+    assert.match(modelMessageText(resumeResult ?? {}), /Goal resumed/u);
+    const contractStates = harness.session.sessionManager
+      .getBranch()
+      .filter((entry) => entry.type === "custom_message" && entry.customType === "goal-contract")
+      .map((entry) => entry.details?.state);
+    // Kickoff, the pause, the resume, and the inactive contract after completion: no duplicates.
+    assert.deepEqual(contractStates, ["active", "paused", "active", "inactive"]);
   } finally {
     await harness.cleanup();
   }
@@ -476,7 +525,8 @@ await queuedInputScenario();
 await busyEditOwnershipScenario();
 await pauseScenario();
 await staleBlockedToolAbortScenario();
+await interruptedResumeScenario();
 await manualCompactionScenario();
 console.log(
-  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, and manual compaction passed",
+  "pi-goal runtime smoke: normal continuation, no-progress guard, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, Esc then 'continue' resume, and manual compaction passed",
 );

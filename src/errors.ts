@@ -25,6 +25,12 @@ const USAGE_LIMIT_GOAL_ERROR_PATTERNS = [
   /insufficient[_\s-]*(?:quota|credits?)|out of credits|out of budget|available balance|payment required/i,
   /(?:credit|balance).{0,32}(?:low|exhausted|depleted)|billing/i,
 ] as const;
+/**
+ * Error text some providers report when the user aborted the run (pressing Esc),
+ * instead of `stopReason: "aborted"`. claude-bridge reports "This operation was aborted".
+ */
+const USER_ABORT_ERROR_RE =
+  /\b(?:this )?operation was aborted\b|\brequest was aborted\b|\bAbortError\b|^Operation aborted$|^Command aborted$/i;
 const NON_RETRYABLE_GOAL_ERROR_RE = /multi-auth rotation failed|credentials tried|unauthori[sz]ed|invalid api key/i;
 const RETRYABLE_GOAL_ERROR_PATTERNS = [
   /overloaded|rate.?limit|too many requests|\b(?:429|500|502|503|504)\b|service.?unavailable|server.?error|internal.?error/i,
@@ -88,8 +94,20 @@ export function isUsageLimitedGoalInterruption(assistant: AssistantMessageLike) 
   );
 }
 
+export function isUserAbort(errorMessage: string) {
+  return USER_ABORT_ERROR_RE.test(errorMessage.trim());
+}
+
+/** A run the user stopped: reported as aborted, as an abort error, or with an aborted signal. */
+export function isUserInterruption(assistant: AssistantMessageLike, signal?: AbortSignal) {
+  if (assistant.stopReason === "aborted") return true;
+  if (assistant.stopReason !== "error") return false;
+  return signal?.aborted === true || (assistant.errorMessage !== undefined && isUserAbort(assistant.errorMessage));
+}
+
 export function isRetryableGoalInterruption(assistant: AssistantMessageLike) {
   if (assistant.stopReason !== "error" || !assistant.errorMessage) return false;
+  if (isUserAbort(assistant.errorMessage)) return false;
   if (isUsageLimitedGoalInterruption(assistant) || NON_RETRYABLE_GOAL_ERROR_RE.test(assistant.errorMessage)) {
     return false;
   }

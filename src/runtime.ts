@@ -2,16 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { checkpointGoalActiveTime, formatDuration } from "./accounting.js";
 import { formatError, isStaleContextError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
-import {
-  createGoalContextContract,
-  createInactiveGoalContextContract,
-  hasGoalContextContract,
-  hasGoalContextContractHistory,
-  hasInactiveGoalContextContract,
-} from "./goal-contract.js";
+import { goalContractFor, hasCurrentGoalContract, hasGoalContextContractHistory } from "./goal-contract.js";
 import { appendGoalPromptMarker, extractContinuationMarker, extractGoalPromptMarker } from "./markers.js";
-import { type ActiveGoal, GOAL_STATE_ENTRY_TYPE, type SafetyPauseCause, serializeGoalState } from "./persistence.js";
-import { buildContinuePrompt, type GoalStatus } from "./prompts.js";
+import { type ActiveGoal, GOAL_STATE_ENTRY_TYPE, MAX_STOP_DETAIL_LENGTH, serializeGoalState } from "./persistence.js";
+import { buildContinuePrompt, type GoalStatus, type PauseReason, stoppedGoalDescription } from "./prompts.js";
 import { DEFAULT_GOAL_SETTINGS, type GoalSettings } from "./settings.js";
 import { assertGoalToolsAvailable, goalToolsAvailable } from "./tool-policy.js";
 import { type GoalWait, GoalWaitTimer } from "./wait.js";
@@ -20,6 +14,7 @@ export { GOAL_STATE_ENTRY_TYPE } from "./persistence.js";
 export {
   GOAL_BLOCKED_TOOL,
   GOAL_COMPLETE_TOOL,
+  GOAL_RESUME_TOOL,
   GOAL_TOOL_NAMES,
   GOAL_WAIT_TOOL,
 } from "./tool-policy.js";
@@ -55,9 +50,8 @@ export type GoalStopRequest =
   | {
       kind: "safety_pause";
       expectedGoalId: string;
-      cause: SafetyPauseCause;
+      cause: "no_progress" | "time_limit";
       abortTurn: boolean;
-      reason: string;
     }
   | { kind: "retry_exhausted"; expectedGoalId: string; reason: string }
   | {
@@ -70,14 +64,9 @@ export type GoalStopRequest =
   | {
       kind: "agent_interruption";
       expectedGoalId: string;
-      status: "paused" | "blocked" | "usage_limited";
+      status: "paused" | "usage_limited";
+      pauseReason?: "interrupted" | "error";
       reason: string;
-    }
-  | {
-      kind: "activation_rollback";
-      expectedGoalId: string;
-      restoreGoal: ActiveGoal;
-      abortTurn: boolean;
     };
 
 export interface StatusContext {
@@ -90,6 +79,7 @@ export interface StatusContext {
   };
   isIdle?: () => boolean;
   hasPendingMessages?: () => boolean;
+  signal?: AbortSignal;
   abort?: () => void;
   sessionManager?: unknown;
 }
@@ -149,6 +139,8 @@ export class GoalRuntime {
   agentRunToolAttempted = false;
   guardAbortGoalId?: string;
   staleGoalToolCallsBlocked = false;
+  /** Set when the user typed (TUI) or sent (RPC) input for the current run; cleared when the run ends. */
+  directUserInput = false;
   pendingGoalPromptMarkers = new Map<string, PendingGoalPrompt>();
   claimedGoalPromptMarkers = new Map<string, string>();
   cancelledGoalPromptMarkers = new Map<string, string>();
@@ -418,12 +410,13 @@ export class GoalRuntime {
   }
 
   stopActiveGoal(ctx: StatusContext, request: GoalStopRequest) {
-    const currentGoal = this.activeGoal;
-    if (!currentGoal || currentGoal.id !== request.expectedGoalId) return undefined;
+    const goal = this.activeGoal;
+    if (!goal || goal.id !== request.expectedGoalId) return undefined;
 
     this.clearGoalWaitTimer();
-    let goal = currentGoal;
-    let status: StoppedGoalStatus;
+    let status: StoppedGoalStatus = "paused";
+    let pauseReason: PauseReason | undefined;
+    let stopDetail: string | undefined;
     switch (request.kind) {
       case "explicit_pause":
         this.recordGoalTime(goal);
@@ -431,9 +424,10 @@ export class GoalRuntime {
         this.clearGoalRecoveryForGoal(goal.id);
         this.blockStaleGoalToolCalls();
         abortCurrentTurn(ctx);
-        status = "paused";
+        pauseReason = "user";
         break;
       case "safety_pause":
+        this.recordGoalTime(goal);
         this.cancelContinuationWork();
         this.clearGoalRecoveryForGoal(goal.id);
         this.blockStaleGoalToolCalls();
@@ -441,14 +435,14 @@ export class GoalRuntime {
           this.guardAbortGoalId = goal.id;
           abortCurrentTurn(ctx);
         }
-        goal = { ...goal, safetyPauseCause: request.cause };
-        status = "paused";
+        pauseReason = request.cause;
         break;
       case "retry_exhausted":
         this.clearGoalRecoveryForGoal(goal.id);
         this.cancelContinuationWork();
         this.blockStaleGoalToolCalls();
         status = "blocked";
+        stopDetail = request.reason;
         break;
       case "tools_unavailable":
         if (request.recordUsage) this.recordGoalTime(goal);
@@ -460,7 +454,7 @@ export class GoalRuntime {
         } else {
           this.clearStaleGoalToolCallBlock();
         }
-        status = "paused";
+        pauseReason = "tools_unavailable";
         break;
       case "blocker_report":
         this.recordGoalTime(goal);
@@ -468,29 +462,51 @@ export class GoalRuntime {
         this.clearGoalRecoveryForGoal(goal.id);
         this.blockStaleGoalToolCalls();
         status = "blocked";
+        stopDetail = request.reason;
         break;
       case "agent_interruption":
         this.cancelContinuationWork();
         this.blockStaleGoalToolCalls();
         abortCurrentTurn(ctx);
         status = request.status;
-        break;
-      case "activation_rollback":
-        goal = request.restoreGoal;
-        if (request.abortTurn) abortCurrentTurn(ctx);
-        this.blockStaleGoalToolCalls();
-        status = "paused";
+        pauseReason = request.status === "paused" ? request.pauseReason : undefined;
+        if (request.pauseReason === "error" || request.status === "usage_limited") stopDetail = request.reason;
         break;
     }
 
-    this.activeGoal = transitionGoal(goal, status);
-    const stoppedGoal = this.activeGoal;
+    const stoppedGoal: ActiveGoal = {
+      ...transitionGoal(goal, status),
+      pauseReason: status === "paused" ? pauseReason : undefined,
+      stopDetail: stopDetail?.trim().slice(0, MAX_STOP_DETAIL_LENGTH) || undefined,
+    };
+    this.activeGoal = stoppedGoal;
     this.persistGoal(stoppedGoal);
-    if (request.kind !== "blocker_report") this.ensureInactiveGoalContextContract(ctx);
-    if (this.activeGoal?.id === stoppedGoal.id && this.activeGoal.status === stoppedGoal.status) {
-      this.updateStatus(ctx, stoppedGoal);
-    }
+    // A goal_blocked result must be persisted before its contract, so turn_end appends it.
+    if (request.kind !== "blocker_report") this.ensureGoalContract(ctx);
+    if (this.activeGoal === stoppedGoal) this.updateStatus(ctx, stoppedGoal);
     return stoppedGoal;
+  }
+
+  /**
+   * Reactivate a paused or blocked goal from inside the current run (goal_resume).
+   * The goal keeps its goal_id: the aborted run that stopped it has ended, so none of
+   * its tool calls can arrive later. The run becomes Goal-owned, so its agent_end
+   * follows the normal continuation rules.
+   */
+  resumeStoppedGoal(ctx: StatusContext) {
+    const goal = this.activeGoal;
+    if (!goal || (goal.status !== "paused" && goal.status !== "blocked")) return undefined;
+    this.cancelContinuationWork();
+    this.clearGoalRecovery();
+    this.clearStaleGoalToolCallBlock();
+    const resumed = resetGoalSafetyEpoch(transitionGoal(goal, "active"));
+    this.activeGoal = resumed;
+    this.persistGoal(resumed);
+    this.updateStatus(ctx, resumed);
+    this.beginAgentRun(resumed.id, "manual");
+    // Pi defers a custom message sent mid-run to the end of the turn, after the tool result.
+    this.ensureGoalContract(ctx);
+    return resumed;
   }
 
   blockStaleGoalToolCalls() {
@@ -519,20 +535,14 @@ export class GoalRuntime {
     return this.pauseGoalForSafety(ctx, "no_progress", abortTurn);
   }
 
-  pauseGoalForSafety(ctx: StatusContext, cause: SafetyPauseCause, abortTurn: boolean) {
+  pauseGoalForSafety(ctx: StatusContext, cause: "no_progress", abortTurn: boolean) {
     const goal = this.activeGoal;
     if (goal?.status !== "active") return false;
-    const stoppedGoal = this.stopActiveGoal(ctx, {
-      kind: "safety_pause",
-      expectedGoalId: goal.id,
-      cause,
-      abortTurn,
-      reason: `no progress across ${goal.toolFreeRuns} automatic runs`,
-    });
+    const stoppedGoal = this.stopActiveGoal(ctx, { kind: "safety_pause", expectedGoalId: goal.id, cause, abortTurn });
     if (!stoppedGoal) return false;
     notifyTerminal(
       ctx.ui,
-      `Goal paused: ${stoppedGoal.toolFreeRuns} automatic continuations in a row ended without using a tool. Run /goal resume to continue.`,
+      `Goal paused: ${stoppedGoal.toolFreeRuns} automatic continuations in a row ended without using a tool. Say "continue" or run /goal resume.`,
       "warning",
     );
     return true;
@@ -620,24 +630,25 @@ export class GoalRuntime {
     this.pendingNonGoalInputs = [];
   }
 
-  ensureGoalContextContract(ctx: StatusContext, goal: ActiveGoal) {
-    const contract = this.goalContextContractForPrompt(ctx, goal);
+  /** Append the contract for the current state when the session does not already end with it. */
+  ensureGoalContract(ctx: StatusContext) {
+    const contract = this.goalContractForPrompt(ctx);
     if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
   }
 
-  ensureInactiveGoalContextContract(ctx: StatusContext) {
-    const contract = this.goalContextContractForPrompt(ctx);
-    if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
-  }
-
-  goalContextContractForPrompt(ctx: StatusContext, goal?: ActiveGoal) {
+  /** The contract for the current state, or undefined when the context already carries it. */
+  goalContractForPrompt(ctx: StatusContext) {
+    const expected = goalContractFor(this.activeGoal);
     const { contextEntries, historyEntries } = goalContractEntries(ctx);
-    if (goal) {
-      return hasGoalContextContract(contextEntries, goal) ? undefined : createGoalContextContract(goal);
+    if (hasCurrentGoalContract(contextEntries, expected)) return undefined;
+    if (
+      expected.details.state === "inactive" &&
+      !hasGoalContextContractHistory(contextEntries) &&
+      !hasGoalContextContractHistory(historyEntries)
+    ) {
+      return undefined;
     }
-    const hasHistory = hasGoalContextContractHistory(contextEntries) || hasGoalContextContractHistory(historyEntries);
-    if (!hasHistory || hasInactiveGoalContextContract(contextEntries)) return undefined;
-    return createInactiveGoalContextContract();
+    return expected;
   }
 
   hasGoalContextContractHistory(ctx: StatusContext) {
@@ -875,7 +886,7 @@ export class GoalRuntime {
 
   clearActiveGoal(ctx: StatusContext) {
     this.clearActiveGoalState(ctx);
-    this.ensureInactiveGoalContextContract(ctx);
+    this.ensureGoalContract(ctx);
   }
 
   clearCompletedGoal(ctx: StatusContext) {
@@ -1003,16 +1014,17 @@ export function createGoal(text: string): ActiveGoal {
 }
 
 export function resetGoalSafetyEpoch(goal: ActiveGoal): ActiveGoal {
-  return { ...goal, toolFreeRuns: 0, safetyPauseCause: undefined };
+  return { ...goal, toolFreeRuns: 0 };
 }
 
+/** Change status; leaving a stopped state drops its reason, and only an active goal can wait. */
 export function transitionGoal(goal: ActiveGoal, status: GoalStatus): ActiveGoal {
   const now = Date.now();
-  const next = {
+  const next: ActiveGoal = {
     ...goal,
     status,
     updatedAt: now,
-    ...(status === "active" ? {} : { waiting: undefined }),
+    ...(status === "active" ? { pauseReason: undefined, stopDetail: undefined } : { waiting: undefined }),
   };
   checkpointGoalActiveTime(next, now, status === "active" && !next.waiting);
   return next;
@@ -1035,7 +1047,9 @@ export function formatStatus(goal: ActiveGoal | undefined) {
   if (!goal) return undefined;
   if (goal.status === "complete") return "complete";
   if (goal.waiting) return `waiting ${safeGoalMenuText(goal.waiting.reason)}`;
-  if (goal.status === "paused" && goal.safetyPauseCause === "no_progress") return "paused (no progress)";
+  if (goal.status === "paused" && goal.pauseReason && goal.pauseReason !== "user") {
+    return `paused (${goal.pauseReason.replace("_", " ")})`;
+  }
   if (goal.status === "usage_limited") return "usage limited";
   if (goal.status !== "active") return goal.status;
   return `active ${formatDuration(goal.timeUsedSeconds)}`;
@@ -1055,8 +1069,10 @@ export function goalSummary(goal: ActiveGoal) {
       : []),
     `Active elapsed: ${formatDuration(goal.timeUsedSeconds)}`,
   ];
-  if (goal.safetyPauseCause === "no_progress") {
-    summary.push("Paused: automatic continuations stopped using tools. Run /goal resume to continue.");
+  if (goal.status === "paused" || goal.status === "blocked") {
+    summary.push(`Stopped: the goal is ${stoppedGoalDescription(goal)}. Say "continue" or run /goal resume.`);
+  } else if (goal.status === "usage_limited") {
+    summary.push(`Stopped: provider usage limit${goal.stopDetail ? ` (${safeGoalMenuText(goal.stopDetail, 300)})` : ""}.`);
   }
   summary.push(`Commands: ${goalCommandHint(goal)}`);
   return summary.join("\n");
@@ -1170,5 +1186,6 @@ export {
   isGoalContextOverflow,
   isRetryableGoalInterruption,
   isUsageLimitedGoalInterruption,
+  isUserInterruption,
   truncateNotification,
 } from "./errors.js";

@@ -26,7 +26,7 @@ export function registerGoal(pi: Parameters<typeof goal>[0]) {
 }
 
 export function registerGoalWithSettingsPath(pi: Parameters<typeof goal>[0], goalSettingsPath: string) {
-  pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait"])]);
+  pi.setActiveTools([...new Set([...pi.getActiveTools(), "goal_complete", "goal_blocked", "goal_wait", "goal_resume"])]);
   goal(pi, { settingsPath: goalSettingsPath });
 }
 export type GoalTool = {
@@ -60,7 +60,7 @@ export type StoredGoal = {
   timeUsedSeconds?: number;
   activeStartedAt?: number;
   toolFreeRuns?: number;
-  safetyPauseCause?: string;
+  pauseReason?: string;
   waiting?: { reason: string; resumeAt?: number };
 };
 
@@ -122,7 +122,7 @@ export function restoreGoalForTest(
   overrides: {
     timeUsedSeconds?: number;
     toolFreeRuns?: number;
-    safetyPauseCause?: "no_progress";
+    pauseReason?: "no_progress" | "interrupted" | "error" | "user";
   } = {},
   contextOverrides: Record<string, unknown> = {},
 ) {
@@ -135,7 +135,7 @@ export function restoreGoalForTest(
     iteration: 3,
     timeUsedSeconds: overrides.timeUsedSeconds ?? 4,
     toolFreeRuns: overrides.toolFreeRuns ?? 0,
-    safetyPauseCause: overrides.safetyPauseCause,
+    pauseReason: overrides.pauseReason,
   };
   return restoreStoredGoalForTest(sessionGoal, [], contextOverrides);
 }
@@ -202,7 +202,7 @@ export function findPersistedGoal(mock: ReturnType<typeof createMockPi>, status:
 export function pickSafetyState(goal: StoredGoal) {
   return {
     toolFreeRuns: goal.toolFreeRuns,
-    safetyPauseCause: goal.safetyPauseCause,
+    pauseReason: goal.pauseReason,
   };
 }
 

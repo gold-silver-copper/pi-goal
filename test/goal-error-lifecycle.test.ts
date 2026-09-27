@@ -95,9 +95,36 @@ test("usage-limit classification recognizes quota failures without swallowing un
   }
 });
 
+test("user aborts pause the goal as interrupted whichever way the provider reports them", async () => {
+  for (const errorMessage of ["This operation was aborted", "Operation aborted"]) {
+    for (const stopReason of ["aborted", "error"] as const) {
+      const stopped = await startGoalForTest();
+      await stopped.mock.events.get("agent_end")?.[0]?.(
+        { messages: [{ role: "assistant", stopReason, errorMessage }] },
+        stopped.ctx,
+      );
+      const goal = requireLastGoal(stopped.mock);
+      assert.equal(goal.status, "paused", `${stopReason}: ${errorMessage}`);
+      assert.equal(goal.pauseReason, "interrupted", `${stopReason}: ${errorMessage}`);
+      assert.equal(stopped.statuses.get("goal"), "paused (interrupted)");
+      assert.match(stopped.notifications.at(-1)?.message ?? "", /Say "continue" to resume it/u);
+    }
+  }
+
+  // An error with some other text still counts as an interruption when pi's abort signal fired.
+  const controller = new AbortController();
+  controller.abort();
+  const signalled = await startGoalForTest({ signal: controller.signal });
+  await signalled.mock.events.get("agent_end")?.[0]?.(
+    { messages: [{ role: "assistant", stopReason: "error", errorMessage: "socket closed by client" }] },
+    signalled.ctx,
+  );
+  assert.equal(requireLastGoal(signalled.mock).pauseReason, "interrupted");
+});
+
 test("agent_end maps abort, quota failure, and terminal error to distinct stopped states", async () => {
   for (const [assistant, status, notification] of [
-    [{ role: "assistant", stopReason: "aborted" }, "paused", /paused after interruption/i],
+    [{ role: "assistant", stopReason: "aborted" }, "paused", /Goal paused\. Say "continue"/i],
     [
       {
         role: "assistant",
@@ -113,8 +140,8 @@ test("agent_end maps abort, quota failure, and terminal error to distinct stoppe
         stopReason: "error",
         errorMessage: "Permission denied by remote service",
       },
-      "blocked",
-      /blocked after agent error/i,
+      "paused",
+      /paused after agent error/i,
     ],
   ] as const) {
     let aborts = 0;
@@ -161,7 +188,8 @@ test("provider error notifications strip terminal controls without changing clas
   );
 
   const notification = stopped.notifications.at(-1)?.message ?? "";
-  assert.equal(lastGoalStatus(stopped.mock), "blocked");
+  assert.equal(lastGoalStatus(stopped.mock), "paused");
+  assert.equal(requireLastGoal(stopped.mock).pauseReason, "error");
   assertNoTerminalControls(notification);
   assert.doesNotMatch(notification, /clipboard|\[2J/u);
   assert.match(notification, /Permission\s+denied remotely\s+now/u);
@@ -190,7 +218,7 @@ test("provider retry wait bounds and escapes untrusted error text", async () => 
 test("terminal agent errors take precedence over missing goal tools", async () => {
   for (const [errorMessage, expectedStatus] of [
     ["You have hit your ChatGPT usage limit.", "usage_limited"],
-    ["Permission denied by remote service", "blocked"],
+    ["Permission denied by remote service", "paused"],
   ] as const) {
     const stopped = await startGoalForTest();
     stopped.mock.rawPi.setActiveTools(["read", "bash"]);

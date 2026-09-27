@@ -1,14 +1,27 @@
 import type { GoalPromptContext } from "./prompts.js";
-import { buildGoalContextPrompt } from "./prompts.js";
+import { buildGoalContextPrompt, buildPausedGoalContextPrompt } from "./prompts.js";
 
 export const GOAL_CONTRACT_MESSAGE_TYPE = "goal-contract";
-export const GOAL_CONTRACT_VERSION = 2;
+export const GOAL_CONTRACT_VERSION = 3;
+
+const SUPERSEDES = "This Goal contract supersedes every earlier goal-contract message.";
 
 const INACTIVE_GOAL_CONTRACT_CONTENT = [
   "Goal mode is inactive.",
-  "This Goal contract supersedes every earlier goal-contract message.",
+  SUPERSEDES,
   "Do not treat an earlier Goal objective, goal_id, Goal-mode rule, or summary of them as current unless a later Goal contract explicitly reactivates Goal mode.",
 ].join("\n");
+
+export type GoalContractState = "active" | "paused" | "inactive";
+
+export interface GoalContractMessage {
+  role: "custom";
+  customType: string;
+  content: string;
+  display: boolean;
+  details: { version: number; state: GoalContractState; goalId?: string };
+  timestamp: number;
+}
 
 interface ContractMessage {
   role?: string;
@@ -21,49 +34,43 @@ interface ContractSessionEntry extends ContractMessage {
   message?: unknown;
 }
 
-export function createGoalContextContract(goal: GoalPromptContext) {
+/**
+ * The contract that describes the current Goal state: an active goal, a paused or
+ * blocked goal the agent may resume when asked, or no goal at all.
+ */
+export function goalContractFor(goal: GoalPromptContext | undefined): GoalContractMessage {
+  if (goal?.status === "active") {
+    return contract(
+      [SUPERSEDES, "Only the objective and goal_id in this latest Goal contract are current.", buildGoalContextPrompt(goal)].join(
+        "\n\n",
+      ),
+      "active",
+      goal.id,
+    );
+  }
+  if (goal?.status === "paused" || goal?.status === "blocked") {
+    return contract([SUPERSEDES, buildPausedGoalContextPrompt(goal)].join("\n\n"), "paused", goal.id);
+  }
+  return contract(INACTIVE_GOAL_CONTRACT_CONTENT, "inactive");
+}
+
+function contract(content: string, state: GoalContractState, goalId?: string): GoalContractMessage {
   return {
-    role: "custom" as const,
+    role: "custom",
     customType: GOAL_CONTRACT_MESSAGE_TYPE,
-    content: [
-      "This Goal contract supersedes every earlier goal-contract message.",
-      "Only the objective and goal_id in this latest Goal contract are current.",
-      buildGoalContextPrompt(goal),
-    ].join("\n\n"),
+    content,
     display: false,
-    details: { version: GOAL_CONTRACT_VERSION, state: "active", goalId: goal.id },
+    details: { version: GOAL_CONTRACT_VERSION, state, ...(goalId ? { goalId } : {}) },
     timestamp: 0,
   };
 }
 
-export function createInactiveGoalContextContract() {
-  return {
-    role: "custom" as const,
-    customType: GOAL_CONTRACT_MESSAGE_TYPE,
-    content: INACTIVE_GOAL_CONTRACT_CONTENT,
-    display: false,
-    details: { version: GOAL_CONTRACT_VERSION, state: "inactive" },
-    timestamp: 0,
-  };
+/** Whether the latest contract in these messages or entries already says exactly this. */
+export function hasCurrentGoalContract(entries: readonly unknown[], expected: GoalContractMessage) {
+  return latestGoalContractContent(entries) === expected.content;
 }
 
-export function reconcileGoalContextContract(messages: unknown[], goal: GoalPromptContext) {
-  return reconcileContract(messages, createGoalContextContract(goal));
-}
-
-export function reconcileInactiveGoalContextContract(messages: unknown[]) {
-  return reconcileContract(messages, createInactiveGoalContextContract());
-}
-
-export function hasGoalContextContract(entries: unknown[], goal: GoalPromptContext) {
-  return latestGoalContractContent(entries) === createGoalContextContract(goal).content;
-}
-
-export function hasInactiveGoalContextContract(entries: unknown[]) {
-  return latestGoalContractContent(entries) === INACTIVE_GOAL_CONTRACT_CONTENT;
-}
-
-export function hasGoalContextContractHistory(entries: unknown[]) {
+export function hasGoalContextContractHistory(entries: readonly unknown[]) {
   return entries.some(isGoalContextContract);
 }
 
@@ -71,17 +78,11 @@ export function isGoalContextContract(message: unknown) {
   return unwrapMessage(message).customType === GOAL_CONTRACT_MESSAGE_TYPE;
 }
 
-function reconcileContract(
-  messages: unknown[],
-  expected: {
-    role: "custom";
-    customType: string;
-    content: string;
-    display: boolean;
-    details: object;
-    timestamp: number;
-  },
-) {
+/**
+ * Append the expected contract when the latest one differs. A first contract after a
+ * compaction summary goes right after the summaries so the provider prefix stays stable.
+ */
+export function reconcileGoalContract(messages: unknown[], expected: GoalContractMessage) {
   if (latestGoalContractContent(messages) === expected.content) return messages;
   const summaryBoundary = leadingSummaryBoundary(messages);
   if (!hasGoalContextContractHistory(messages) && hasLeadingSummary(messages, summaryBoundary)) {

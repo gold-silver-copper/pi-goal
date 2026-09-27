@@ -1,11 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyTerminal } from "./errors.js";
-import {
-  GOAL_CONTRACT_MESSAGE_TYPE,
-  isGoalContextContract,
-  reconcileGoalContextContract,
-  reconcileInactiveGoalContextContract,
-} from "./goal-contract.js";
+import { GOAL_CONTRACT_MESSAGE_TYPE, goalContractFor, isGoalContextContract, reconcileGoalContract } from "./goal-contract.js";
 import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
 import {
   type AssistantMessageLike,
@@ -18,6 +13,7 @@ import {
   isGoalContextOverflow,
   isRetryableGoalInterruption,
   isUsageLimitedGoalInterruption,
+  isUserInterruption,
   resetGoalSafetyEpoch,
   STATUS_KEY,
   type StatusContext,
@@ -53,6 +49,7 @@ export function registerGoalLifecycle(
     runtime.guardAbortGoalId = undefined;
     runtime.clearGoalRecovery();
     runtime.clearStaleGoalToolCallBlock();
+    runtime.directUserInput = false;
     const settingsResult = readGoalSettings(options.settingsPath);
     runtime.settings = settingsResult.settings;
     for (const warning of settingsResult.warnings) notifyTerminal(ctx.ui, `pi-goal: ${warning}`, "warning");
@@ -67,7 +64,7 @@ export function registerGoalLifecycle(
         return;
       }
       runtime.persistGoal(loaded);
-      runtime.ensureGoalContextContract(ctx, loaded);
+      runtime.ensureGoalContract(ctx);
       if (runtime.activeGoal?.id !== loaded.id || !isActiveGoal(runtime.activeGoal)) return;
       runtime.updateStatus(ctx, runtime.activeGoal);
       runtime.restoreGoalWaitTimer(ctx);
@@ -76,10 +73,10 @@ export function registerGoalLifecycle(
 
     if (loaded) {
       runtime.persistGoal(loaded);
-      runtime.ensureInactiveGoalContextContract(ctx);
+      runtime.ensureGoalContract(ctx);
       runtime.updateStatus(ctx, loaded);
     } else {
-      runtime.ensureInactiveGoalContextContract(ctx);
+      runtime.ensureGoalContract(ctx);
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
   });
@@ -129,7 +126,7 @@ export function registerGoalLifecycle(
       runtime.updateStatus(ctx, runtime.activeGoal);
     }
     const compactedGoalId = runtime.activeGoal.id;
-    runtime.ensureGoalContextContract(ctx, runtime.activeGoal);
+    runtime.ensureGoalContract(ctx);
     if (runtime.activeGoal?.id !== compactedGoalId || !isActiveGoal(runtime.activeGoal)) return;
     if (!usageRecorded) return;
 
@@ -167,6 +164,7 @@ export function registerGoalLifecycle(
       return;
     }
     if (/^\/goal(?:\s|$)/u.test(event.text.trimStart())) return;
+    runtime.directUserInput = true;
     if (runtime.activeGoal?.waiting) runtime.clearGoalWait(ctx, runtime.activeGoal.id);
     if (event.streamingBehavior === "followUp") {
       runtime.noteQueuedNonGoalInput(event.text, "followUp", true);
@@ -233,13 +231,12 @@ export function registerGoalLifecycle(
   pi.on("context", (event, ctx) => {
     if (!sessionActive) return;
     const keptMessages = event.messages;
-    const hasGoalContractHistory =
-      keptMessages.some(isGoalContextContract) || runtime.hasGoalContextContractHistory(ctx);
-    const messages = isActiveGoal(runtime.activeGoal)
-      ? reconcileGoalContextContract(keptMessages, runtime.activeGoal)
-      : hasGoalContractHistory
-        ? reconcileInactiveGoalContextContract(keptMessages)
-        : keptMessages;
+    const expected = goalContractFor(runtime.activeGoal);
+    const needsContract =
+      expected.details.state !== "inactive" ||
+      keptMessages.some(isGoalContextContract) ||
+      runtime.hasGoalContextContractHistory(ctx);
+    const messages = needsContract ? reconcileGoalContract(keptMessages, expected) : keptMessages;
     if (runtime.activeGoal?.status === "paused" && runtime.guardAbortGoalId === runtime.activeGoal.id) {
       // A current custom follow-up clears the guard at message_start. Otherwise,
       // context transformation aborts before the provider adapter receives the signal.
@@ -325,7 +322,7 @@ export function registerGoalLifecycle(
       runtime.persistGoal(runtime.activeGoal);
       runtime.updateStatus(ctx, runtime.activeGoal);
     }
-    return goalContractBoundaryResult(ctx, runtime.activeGoal);
+    return goalContractBoundaryResult(ctx);
   });
 
   pi.on("agent_start", (_event, _ctx) => {
@@ -346,16 +343,15 @@ export function registerGoalLifecycle(
 
   pi.on("turn_end", (_event, ctx) => {
     if (!sessionActive) return;
-    // Terminal Goal tools transition state synchronously, but their inactive contract
-    // must wait until Pi has persisted the real tool result at this turn boundary.
-    if (runtime.activeGoal?.status !== "active") {
-      runtime.ensureInactiveGoalContextContract(ctx);
-    }
+    // Terminal Goal tools transition state synchronously, but their contract must
+    // wait until Pi has persisted the real tool result at this turn boundary.
+    if (runtime.activeGoal?.status !== "active") runtime.ensureGoalContract(ctx);
   });
 
   pi.on("agent_end", (event, ctx) => {
     if (!sessionActive) return;
     const run = runtime.finishAgentRun();
+    runtime.directUserInput = false;
     if (run.goalId === null) return;
     if (!runtime.runOwnsGoal()) return;
     if (run.goalId && run.goalId !== runtime.activeGoal?.id) return;
@@ -368,9 +364,9 @@ export function registerGoalLifecycle(
     if (!alreadyAwaitingContinuation) runtime.activeGoal = incrementGoal(runtime.activeGoal);
     runtime.recordGoalTime(runtime.activeGoal);
 
-    if (finalAssistant?.stopReason === "aborted") {
+    if (finalAssistant && isUserInterruption(finalAssistant, ctx.signal)) {
       runtime.clearGoalRecoveryForGoal(goalId);
-      stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "paused");
+      stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "paused", "interrupted");
       return;
     }
 
@@ -392,12 +388,11 @@ export function registerGoalLifecycle(
         return;
       }
       runtime.clearGoalRecoveryForGoal(goalId);
-      stopGoalAfterAgentEnd(
-        ctx,
-        runtime.activeGoal,
-        finalAssistant,
-        isUsageLimitedGoalInterruption(finalAssistant) ? "usage_limited" : "blocked",
-      );
+      if (isUsageLimitedGoalInterruption(finalAssistant)) {
+        stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "usage_limited");
+      } else {
+        stopGoalAfterAgentEnd(ctx, runtime.activeGoal, finalAssistant, "paused", "error");
+      }
       return;
     }
 
@@ -430,8 +425,8 @@ export function registerGoalLifecycle(
     runtime.clearSettledSafetyTracking();
   });
 
-  function goalContractBoundaryResult(ctx: StatusContext, goal?: ActiveGoal) {
-    const message = runtime.goalContextContractForPrompt(ctx, goal);
+  function goalContractBoundaryResult(ctx: StatusContext) {
+    const message = runtime.goalContractForPrompt(ctx);
     return message ? { message } : undefined;
   }
 
@@ -447,21 +442,19 @@ export function registerGoalLifecycle(
     ctx: StatusContext,
     goal: ActiveGoal,
     assistant: AssistantMessageLike,
-    status: "paused" | "blocked" | "usage_limited",
+    status: "paused" | "usage_limited",
+    pauseReason?: "interrupted" | "error",
   ) {
     const stoppedGoal = runtime.stopActiveGoal(ctx, {
       kind: "agent_interruption",
       expectedGoalId: goal.id,
       status,
+      pauseReason,
       reason: assistant.errorMessage ?? `goal ${status} after agent interruption`,
     });
     if (!stoppedGoal) return;
 
     const details = assistant.errorMessage ? ` (${truncateNotification(assistant.errorMessage)})` : "";
-    if (status === "paused") {
-      notifyTerminal(ctx.ui, `Goal paused after interruption${details}. Run /goal resume to continue.`, "warning");
-      return;
-    }
     if (status === "usage_limited") {
       notifyTerminal(
         ctx.ui,
@@ -470,12 +463,13 @@ export function registerGoalLifecycle(
       );
       return;
     }
-    notifyTerminal(
-      ctx.ui,
-      `Goal blocked after agent error${details}. Resolve the blocker or run /goal resume to retry.`,
-      "warning",
-    );
+    if (pauseReason === "interrupted") {
+      notifyTerminal(ctx.ui, 'Goal paused. Say "continue" to resume it, or run /goal resume.', "info");
+      return;
+    }
+    notifyTerminal(ctx.ui, `Goal paused after agent error${details}. Say "continue" or run /goal resume to retry.`, "warning");
   }
+
 }
 
 function hasAssistantToolCall(messages: readonly unknown[]) {

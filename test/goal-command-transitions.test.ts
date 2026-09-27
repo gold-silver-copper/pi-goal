@@ -60,13 +60,13 @@ test("resume safely reactivates every resumable stopped status and rotates goal_
 test("safety epochs reset on successful resume and active edit", async () => {
   const safety = {
     toolFreeRuns: 3,
-    safetyPauseCause: "no_progress" as const,
+    pauseReason: "no_progress" as const,
   };
   const resumed = restoreGoalForTest("paused", safety);
   await resumed.mock.commands.get("goal")?.handler("resume", resumed.ctx);
   assert.deepEqual(pickSafetyState(requireLastGoal(resumed.mock)), {
     toolFreeRuns: 0,
-    safetyPauseCause: undefined,
+    pauseReason: undefined,
   });
 
   const edited = await startGoalForTest();
@@ -76,14 +76,14 @@ test("safety epochs reset on successful resume and active edit", async () => {
   await edited.mock.commands.get("goal")?.handler("edit revised objective", edited.ctx);
   assert.deepEqual(pickSafetyState(requireLastGoal(edited.mock)), {
     toolFreeRuns: 0,
-    safetyPauseCause: undefined,
+    pauseReason: undefined,
   });
 });
 
 test("stopped input and failed resume preserve the exact safety epoch", async () => {
   const safety = {
     toolFreeRuns: 3,
-    safetyPauseCause: "no_progress" as const,
+    pauseReason: "no_progress" as const,
   };
   const restored = restoreGoalForTest("paused", safety);
   restored.mock.events.get("input")?.[0]?.({ source: "interactive", text: "what happened?" }, restored.ctx);
@@ -175,7 +175,7 @@ test("resume stays stopped when another policy hides terminal tools", async () =
 test("resume succeeds after the restrictive policy restores terminal tools", async () => {
   const restored = restoreGoalForTest("paused");
   restored.mock.rawPi.setActiveTools(["read", "bash"]);
-  restored.mock.rawPi.setActiveTools(["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  restored.mock.rawPi.setActiveTools(["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 
   await restored.mock.commands.get("goal")?.handler("resume", restored.ctx);
 
@@ -187,6 +187,7 @@ test("resume succeeds after the restrictive policy restores terminal tools", asy
     "goal_complete",
     "goal_blocked",
     "goal_wait",
+    "goal_resume",
   ]);
 });
 

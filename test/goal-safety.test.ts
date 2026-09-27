@@ -426,7 +426,7 @@ test("three blank automatic runs pause for no progress without a fourth continua
   const stopped = requireLastGoal(stalled.mock);
   assert.equal(stopped.status, "paused");
   assert.equal(stopped.toolFreeRuns, 3);
-  assert.equal(stopped.safetyPauseCause, "no_progress");
+  assert.equal(stopped.pauseReason, "no_progress");
   assert.equal(stalled.mock.sentUserMessages.length, 4);
   assert.match(stalled.notifications.at(-1)?.message ?? "", /3 automatic continuations in a row ended without using a tool/i);
 });

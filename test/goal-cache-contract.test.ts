@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { builtinTool, createMockContext, createMockPi } from "./support/pi-mock.js";
-import { createGoalContextContract } from "../src/goal-contract.js";
+import { goalContractFor } from "../src/goal-contract.js";
 import {
   assertHardenedGoalPrompt,
   assertPromptHasGoalId,
@@ -306,7 +306,7 @@ test("goal_complete persists one real provider output before the inactive contra
   assert.ok(inactiveIndex > outputIndex);
 });
 
-test("goal_blocked persists one real provider output before the inactive contract", async () => {
+test("goal_blocked persists one real provider output before the paused contract", async () => {
   const branch: Record<string, unknown>[] = [];
   const allTools = [builtinTool("read"), builtinTool("bash")];
   const mock = createMockPi({ activeTools: ["read", "bash"], allTools });
@@ -357,7 +357,7 @@ test("goal_blocked persists one real provider output before the inactive contrac
   });
   await restarted.events.get("session_start")?.[0]?.({ reason: "reload" }, restartedContext.ctx);
   const restartedContract = restarted.sentMessages.at(-1)?.message as { content?: string } | undefined;
-  assert.match(restartedContract?.content ?? "", /Goal mode is inactive/u);
+  assert.match(restartedContract?.content ?? "", /Goal mode is paused/u);
 
   branch.push({ type: "message", message: toolCall }, { type: "message", message: toolResult });
   await mock.events.get("turn_end")?.[0]?.({ message: toolCall, toolResults: [toolResult] }, context.ctx);
@@ -366,7 +366,7 @@ test("goal_blocked persists one real provider output before the inactive contrac
     content?: string;
     customType?: string;
   };
-  assert.match(inactiveContract.content ?? "", /Goal mode is inactive/u);
+  assert.match(inactiveContract.content ?? "", /Goal mode is paused/u);
   branch.push({
     type: "custom_message",
     customType: inactiveContract.customType,
@@ -390,7 +390,7 @@ test("goal_blocked persists one real provider output before the inactive contrac
   assert.match(String(outputs[0]?.output), /Goal blocked: External access is required/u);
   assert.doesNotMatch(JSON.stringify(providerInput), /No result provided/u);
   const outputIndex = providerInput.indexOf(outputs[0] as Record<string, unknown>);
-  const inactiveIndex = providerInput.findIndex((item) => JSON.stringify(item).includes("Goal mode is inactive"));
+  const inactiveIndex = providerInput.findIndex((item) => JSON.stringify(item).includes("Goal mode is paused"));
   assert.ok(outputIndex >= 0);
   assert.ok(inactiveIndex > outputIndex);
 });
@@ -404,7 +404,7 @@ test("continuation and wait resume preserve the post-activation request prefix",
     sessionManager: { getBranch: () => branch, getEntries: () => branch },
   });
   await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
-  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 
   await mock.commands.get("goal")?.handler("preserve the provider prefix", context.ctx);
   const kickoffPrompt = mock.sentUserMessages.at(-1)?.text ?? "";
@@ -416,7 +416,7 @@ test("continuation and wait resume preserve the post-activation request prefix",
     customType: kickoffContract.customType,
     content: kickoffContract.content,
   });
-  assert.deepEqual(kickoff.activeTools, ["read", "bash", "goal_complete", "goal_blocked", "goal_wait"]);
+  assert.deepEqual(kickoff.activeTools, ["read", "bash", "goal_complete", "goal_blocked", "goal_wait", "goal_resume"]);
 
   branch.push(assistantUsageEntry({ totalTokens: 500 }));
   await mock.events.get("agent_end")?.[0]?.(
@@ -656,7 +656,7 @@ test("restoring a retained matching Goal contract does not append a duplicate", 
     iteration: 1,
     timeUsedSeconds: 2,
   };
-  const contract = createGoalContextContract(sessionGoal);
+  const contract = goalContractFor(sessionGoal);
   const restored = restoreStoredGoalForTest(sessionGoal, [
     {
       type: "custom_message",
@@ -669,7 +669,7 @@ test("restoring a retained matching Goal contract does not append a duplicate", 
   assert.equal(restored.mock.sentMessages.length, 0);
 });
 
-test("restoring an inactive Goal appends one superseding inactive contract", () => {
+test("restoring a paused Goal appends one superseding paused contract that keeps the objective", () => {
   const pausedGoal = {
     id: "restored-paused-contract",
     text: "retain inactive history",
@@ -679,7 +679,7 @@ test("restoring an inactive Goal appends one superseding inactive contract", () 
     iteration: 1,
     timeUsedSeconds: 2,
   };
-  const activeContract = createGoalContextContract({ ...pausedGoal, status: "active" });
+  const activeContract = goalContractFor({ ...pausedGoal, status: "active" });
   const restored = restoreStoredGoalForTest(pausedGoal, [
     {
       type: "custom_message",
@@ -690,10 +690,11 @@ test("restoring an inactive Goal appends one superseding inactive contract", () 
     },
   ]);
   assert.equal(restored.mock.sentMessages.length, 1);
-  assert.match(
-    restoredGoalContract(restored.mock).content ?? "",
-    /Goal mode is inactive.*supersedes every earlier goal-contract/su,
-  );
+  const pausedContract = restoredGoalContract(restored.mock).content ?? "";
+  assert.match(pausedContract, /supersedes every earlier goal-contract.*Goal mode is paused/su);
+  assert.match(pausedContract, /retain inactive history/u);
+  assert.match(pausedContract, /call goal_resume with this goal_id/u);
+  assert.match(pausedContract, /<goal_id>\nrestored-paused-contract\n<\/goal_id>/u);
 });
 
 test("persisting a restored waiting Goal contract does not wake the Goal", async () => {

@@ -86,7 +86,7 @@ test("session reload pauses an active goal already at the no-progress limit", ()
   };
   const restored = restoreStoredGoalForTest(sessionGoal, [], {}, DEFAULT_SETTINGS_PATH);
   assert.equal(lastGoalStatus(restored.mock), "paused");
-  assert.equal(requireLastGoal(restored.mock).safetyPauseCause, "no_progress");
+  assert.equal(requireLastGoal(restored.mock).pauseReason, "no_progress");
   assert.equal(restored.mock.sentUserMessages.length, 0);
 });
 
