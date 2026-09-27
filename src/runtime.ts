@@ -4,6 +4,7 @@ import { checkpointGoalActiveTime, formatDuration } from "./accounting.js";
 import { formatError, isStaleContextError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
 import { goalContractFor, hasCurrentGoalContract, hasGoalContextContractHistory } from "./goal-contract.js";
 import { appendGoalPromptMarker, extractContinuationMarker, extractGoalPromptMarker } from "./markers.js";
+import { type ObjectiveFile, refreshObjectiveFile } from "./objective-file.js";
 import { type ActiveGoal, GOAL_STATE_ENTRY_TYPE, MAX_STOP_DETAIL_LENGTH, serializeGoalState } from "./persistence.js";
 import { buildContinuePrompt, type GoalStatus, type PauseReason, stoppedGoalDescription } from "./prompts.js";
 import { DEFAULT_GOAL_SETTINGS, type GoalSettings } from "./settings.js";
@@ -105,11 +106,6 @@ interface PendingNonGoalInput {
 const MAX_CANCELLED_CONTINUATION_PROMPTS = 20;
 const MAX_PENDING_GOAL_PROMPTS = 20;
 const MAX_PENDING_NON_GOAL_INPUTS = 20;
-const CONTRADICTORY_COMPLETION_PATTERNS = [
-  /(?<!could\s)\bnot\s+(?:yet\s+)?(?:complete|completed|done|finished)\b/i,
-  /\bstill\s+(?:incomplete|failing|failing\s+tests?|fails?)\b/i,
-  /\btests?\s+(?:still\s+)?fail(?:ing)?\b/i,
-] as const;
 
 export function isActiveGoal(goal: ActiveGoal | undefined): goal is ActiveGoal {
   return goal?.status === "active";
@@ -638,6 +634,7 @@ export class GoalRuntime {
 
   /** The contract for the current state, or undefined when the context already carries it. */
   goalContractForPrompt(ctx: StatusContext) {
+    this.refreshObjectiveFile();
     const expected = goalContractFor(this.activeGoal);
     const { contextEntries, historyEntries } = goalContractEntries(ctx);
     if (hasCurrentGoalContract(contextEntries, expected)) return undefined;
@@ -649,6 +646,16 @@ export class GoalRuntime {
       return undefined;
     }
     return expected;
+  }
+
+  /** A contract about to be written says whether the objective file changed, so re-hash it first. */
+  private refreshObjectiveFile() {
+    const goal = this.activeGoal;
+    if (!goal?.objectiveFile) return;
+    const file = refreshObjectiveFile(goal.objectiveFile);
+    if (file === goal.objectiveFile) return;
+    this.activeGoal = { ...goal, objectiveFile: file };
+    this.persistGoal(this.activeGoal);
   }
 
   hasGoalContextContractHistory(ctx: StatusContext) {
@@ -998,11 +1005,12 @@ export class GoalRuntime {
   }
 }
 
-export function createGoal(text: string): ActiveGoal {
+export function createGoal(text: string, objectiveFile?: ObjectiveFile): ActiveGoal {
   const now = Date.now();
   return {
     id: randomUUID(),
     text,
+    ...(objectiveFile ? { objectiveFile } : {}),
     status: "active",
     startedAt: now,
     updatedAt: now,
@@ -1101,10 +1109,6 @@ export function isResumableGoalStatus(status: GoalStatus) {
 export function stoppedStatusLabel(status: GoalStatus) {
   if (status === "usage_limited") return "usage-limited";
   return status;
-}
-
-export function isContradictoryCompletionSummary(summary: string) {
-  return CONTRADICTORY_COMPLETION_PATTERNS.some((pattern) => pattern.test(summary));
 }
 
 export function goalIdRejectionReason(goal: ActiveGoal, requestedGoalId: string) {

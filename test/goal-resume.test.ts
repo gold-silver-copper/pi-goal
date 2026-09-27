@@ -137,7 +137,7 @@ test("goal_resume is rejected for an active goal and resumes a blocked one", asy
 
   await requireGoalTool(started.mock, "goal_blocked").execute(
     "blocked-call",
-    { goal_id: goal.id, reason: "needs a token", evidence: "401 from the registry", repeated_turns: 3 },
+    { goal_id: goal.id, reason: "needs a token", evidence: "401 from the registry" },
     new AbortController().signal,
     () => undefined,
     started.ctx,

@@ -1,5 +1,6 @@
 import { isNonNegativeFiniteNumber, nonNegativeFiniteNumber } from "./accounting.js";
 import { isUserAbort } from "./errors.js";
+import { normalizeObjectiveFile, type ObjectiveFile } from "./objective-file.js";
 import type { GoalStatus, PauseReason } from "./prompts.js";
 import { type GoalWait, normalizeGoalWait } from "./wait.js";
 
@@ -22,6 +23,8 @@ export interface ActiveGoal {
   pauseReason?: PauseReason;
   /** Error text for an `error` pause, or the blocker reason for a blocked goal. */
   stopDetail?: string;
+  /** Set when the objective is a prompt file. */
+  objectiveFile?: ObjectiveFile;
   waiting?: GoalWait;
 }
 
@@ -107,6 +110,7 @@ export function normalizeLoadedGoal(value: unknown): ActiveGoal | undefined {
       typeof value.stopDetail === "string" && value.stopDetail.trim()
         ? value.stopDetail.slice(0, MAX_STOP_DETAIL_LENGTH)
         : undefined,
+    objectiveFile: normalizeObjectiveFile(value.objectiveFile),
     waiting,
   };
 }

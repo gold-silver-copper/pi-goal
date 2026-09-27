@@ -21,7 +21,6 @@ export { completeGoalArguments, parseCommand, validateObjective } from "./comman
 export {
   findFinalAssistantMessage,
   formatStatus,
-  isContradictoryCompletionSummary,
   isRetryableGoalInterruption,
   isUsageLimitedGoalInterruption,
 } from "./runtime.js";

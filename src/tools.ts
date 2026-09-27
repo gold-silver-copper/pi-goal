@@ -17,7 +17,6 @@ import {
   GOAL_WAIT_TOOL,
   type GoalRuntime,
   goalIdRejectionReason,
-  isContradictoryCompletionSummary,
   MAX_GOAL_ID_LENGTH,
   STATUS_KEY,
   transitionGoal,
@@ -35,6 +34,7 @@ interface GoalCompleteDetails {
   goal: string;
   goal_id: string;
   summary: string;
+  deviations?: string;
 }
 
 interface GoalBlockedDetails {
@@ -42,7 +42,6 @@ interface GoalBlockedDetails {
   goal_id: string;
   reason: string;
   evidence: string;
-  repeated_turns: number;
 }
 
 interface GoalWaitDetails {
@@ -56,6 +55,7 @@ interface GoalWaitDetails {
 
 const MAX_GOAL_TEXT_LENGTH = 4_000;
 const MAX_COMPLETION_SUMMARY_LENGTH = 4_000;
+const MAX_DEVIATIONS_LENGTH = 2_000;
 const MAX_BLOCKER_REASON_LENGTH = 1_000;
 const MAX_BLOCKER_EVIDENCE_LENGTH = 4_000;
 
@@ -64,7 +64,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
     name: GOAL_COMPLETE_TOOL,
     label: "Goal Complete",
     description:
-      "Mark an active /goal complete only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and every requirement is verified. Tool visibility alone does not activate Goal mode. Never call for ordinary work, partial progress, blockers, failures, or unverified work.",
+      "Mark an active /goal complete only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and every requirement is met and verified. List anything done differently or deliberately left out in deviations. Tool visibility alone does not activate Goal mode. Never call for ordinary work, partial progress, blockers or failures.",
     parameters: Type.Object({
       goal_id: Type.String({
         minLength: 1,
@@ -75,9 +75,15 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       summary: Type.String({
         minLength: 1,
         maxLength: MAX_COMPLETION_SUMMARY_LENGTH,
-        description:
-          "State what was completed and what evidence verified it. Do not use this tool to report partial progress, blockers, failures, or remaining work.",
+        description: "What was done and the evidence that verified it.",
       }),
+      deviations: Type.Optional(
+        Type.String({
+          maxLength: MAX_DEVIATIONS_LENGTH,
+          description:
+            "Anything done differently from the objective or deliberately left out, each with its reason. Leave it out when there is nothing to report.",
+        }),
+      ),
     }),
     renderResult(result) {
       return renderGoalCompletion(result);
@@ -87,57 +93,25 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       const goal = completedGoal?.text ?? "unknown goal";
       const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
       const summary = typeof params.summary === "string" ? params.summary.trim() : "";
-
-      if (!completedGoal) {
-        const rejection = "Goal completion rejected: no active goal.";
+      const deviations = typeof params.deviations === "string" ? params.deviations.trim() : "";
+      const details = completionDetails(goal, requestedGoalId, summary, deviations);
+      const reject = (reason: string) => {
+        const rejection = `Goal completion rejected: ${reason}.`;
         notifyTerminal(ctx.ui, rejection, "warning");
+        return { content: toolContent(rejection), details };
+      };
 
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
-      }
-      if (!runtime.runOwnsGoal()) {
-        const rejection = "Goal completion rejected: current run does not own the active goal.";
-        notifyTerminal(ctx.ui, rejection, "warning");
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
-      }
+      if (!completedGoal) return reject("no active goal");
+      if (!runtime.runOwnsGoal()) return reject("current run does not own the active goal");
       const staleGoalRejection = goalIdRejectionReason(completedGoal, requestedGoalId);
-      if (staleGoalRejection) {
-        const rejection = `Goal completion rejected: ${staleGoalRejection}.`;
-        notifyTerminal(ctx.ui, rejection, "warning");
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
+      if (staleGoalRejection) return reject(staleGoalRejection);
+      if (completedGoal.status !== "active") return reject(`goal is ${completedGoal.status}, not active`);
+      if (!summary) return reject("summary is empty");
+      if (summary.length > MAX_COMPLETION_SUMMARY_LENGTH) {
+        return reject(`summary is too long (${summary.length}/${MAX_COMPLETION_SUMMARY_LENGTH} characters)`);
       }
-      if (completedGoal.status !== "active") {
-        const rejection = `Goal completion rejected: goal is ${completedGoal.status}, not active.`;
-        notifyTerminal(ctx.ui, rejection, "warning");
-
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
-      }
-
-      const rejectionReason = !summary
-        ? "summary is empty"
-        : summary.length > MAX_COMPLETION_SUMMARY_LENGTH
-          ? "summary is too long"
-          : isContradictoryCompletionSummary(summary)
-            ? "summary says the goal is not complete"
-            : undefined;
-      if (rejectionReason) {
-        const rejection = `Goal completion rejected: ${rejectionReason}.`;
-        notifyTerminal(ctx.ui, rejection, "warning");
-        return {
-          content: toolContent(rejection),
-          details: completionDetails(goal, requestedGoalId, summary),
-        };
+      if (deviations.length > MAX_DEVIATIONS_LENGTH) {
+        return reject(`deviations is too long (${deviations.length}/${MAX_DEVIATIONS_LENGTH} characters)`);
       }
 
       runtime.clearGoalWaitTimer();
@@ -151,8 +125,8 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       notifyTerminal(ctx.ui, `Goal complete: ${goal}`, "info");
 
       return {
-        content: toolContent(`Goal complete: ${summary}`),
-        details: completionDetails(goal, requestedGoalId, summary),
+        content: toolContent(`Goal complete: ${summary}${deviations ? `\n\nDeviations:\n${deviations}` : ""}`),
+        details,
         terminate: true,
       };
     },
@@ -162,7 +136,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
     name: GOAL_BLOCKED_TOOL,
     label: "Goal Blocked",
     description:
-      "Stop an active /goal only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and the same evidenced external blocker recurred for at least three consecutive Goal turns. Tool visibility alone does not activate Goal mode. Never call for ordinary clarification, uncertainty, incomplete work, or recoverable failures.",
+      "Stop an active /goal only when the latest effective Goal contract explicitly says Goal mode is active, supplies the matching current goal_id, and the goal cannot go forward at all without an action you cannot take, after trying reasonable alternatives. If the user can do something and you can carry on afterwards, ask in a message and call goal_wait instead. Tool visibility alone does not activate Goal mode. Never call because work is hard, slow, uncertain or failing.",
     parameters: Type.Object({
       goal_id: Type.String({
         minLength: 1,
@@ -177,11 +151,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       evidence: Type.String({
         minLength: 1,
         maxLength: MAX_BLOCKER_EVIDENCE_LENGTH,
-        description: "Concrete evidence from the repeated attempts that proves the impasse.",
-      }),
-      repeated_turns: Type.Integer({
-        minimum: 3,
-        description: "Number of separate turns spent trying to resolve this same blocker.",
+        description: "Concrete evidence from the attempts that shows why the goal cannot go forward.",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -190,13 +160,12 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       const requestedGoalId = typeof params.goal_id === "string" ? params.goal_id.trim() : "";
       const reason = typeof params.reason === "string" ? params.reason.trim() : "";
       const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
-      const repeatedTurns = typeof params.repeated_turns === "number" ? params.repeated_turns : Number.NaN;
       const reject = (rejectionReason: string, terminate = false) => {
         const rejection = `goal_blocked rejected: ${rejectionReason}.`;
         notifyTerminal(ctx.ui, rejection, "warning");
         return {
           content: toolContent(rejection),
-          details: blockerDetails(goal, requestedGoalId, reason, evidence, repeatedTurns),
+          details: blockerDetails(goal, requestedGoalId, reason, evidence),
           ...(terminate ? { terminate: true as const } : {}),
         };
       };
@@ -212,8 +181,6 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
       if (reason.length > MAX_BLOCKER_REASON_LENGTH) return reject("reason is too long");
       if (!evidence) return reject("evidence is empty");
       if (evidence.length > MAX_BLOCKER_EVIDENCE_LENGTH) return reject("evidence is too long");
-      if (!Number.isInteger(repeatedTurns)) return reject("repeated_turns must be a whole number");
-      if (repeatedTurns < 3) return reject("repeated_turns must be at least 3");
 
       const stoppedGoal = runtime.stopActiveGoal(ctx, {
         kind: "blocker_report",
@@ -225,7 +192,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 
       return {
         content: toolContent(`Goal blocked: ${reason}`),
-        details: blockerDetails(goal, requestedGoalId, reason, evidence, repeatedTurns),
+        details: blockerDetails(goal, requestedGoalId, reason, evidence),
         terminate: true,
       };
     },
@@ -379,13 +346,17 @@ export function goalCompletionMarkdown(result: GoalCompletionRenderResult) {
   const completionPrefix = "Goal complete:";
   if (!content.startsWith(completionPrefix)) return content;
 
-  const details = result.details;
-  const summary =
-    details && typeof details === "object" && "summary" in details && typeof details.summary === "string"
-      ? details.summary
-      : content.slice(completionPrefix.length);
+  const details = (result.details && typeof result.details === "object" ? result.details : {}) as {
+    summary?: unknown;
+    deviations?: unknown;
+  };
+  const summary = typeof details.summary === "string" ? details.summary : content.slice(completionPrefix.length);
+  const sections = ["**Goal complete**"];
   const safeSummary = safeTerminalText(summary);
-  return safeSummary ? `**Goal complete**\n\n${safeSummary}` : "**Goal complete**";
+  if (safeSummary) sections.push(safeSummary);
+  const safeDeviations = typeof details.deviations === "string" ? safeTerminalText(details.deviations) : "";
+  if (safeDeviations) sections.push("**Deviations**", safeDeviations);
+  return sections.join("\n\n");
 }
 
 export function renderGoalCompletion(result: GoalCompletionRenderResult) {
@@ -404,11 +375,12 @@ function toolContent(text: string) {
   ];
 }
 
-function completionDetails(goal: string, goalId: string, summary: string): GoalCompleteDetails {
+function completionDetails(goal: string, goalId: string, summary: string, deviations: string): GoalCompleteDetails {
   return {
     goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
     goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
     summary: summary.slice(0, MAX_COMPLETION_SUMMARY_LENGTH),
+    ...(deviations ? { deviations: deviations.slice(0, MAX_DEVIATIONS_LENGTH) } : {}),
   };
 }
 
@@ -417,14 +389,12 @@ function blockerDetails(
   goalId: string,
   reason: string,
   evidence: string,
-  repeatedTurns: number,
 ): GoalBlockedDetails {
   return {
     goal: goal.slice(0, MAX_GOAL_TEXT_LENGTH),
     goal_id: goalId.slice(0, MAX_GOAL_ID_LENGTH),
     reason: reason.slice(0, MAX_BLOCKER_REASON_LENGTH),
     evidence: evidence.slice(0, MAX_BLOCKER_EVIDENCE_LENGTH),
-    repeated_turns: Number.isFinite(repeatedTurns) ? repeatedTurns : 0,
   };
 }
 

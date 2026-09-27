@@ -48,6 +48,7 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
       }
     | undefined;
   assert.deepEqual(completionParameters?.required, ["goal_id", "summary"]);
+  assert.equal(completionParameters?.properties?.deviations?.maxLength, 2_000);
   assert.equal(completionParameters?.properties?.goal_id?.minLength, 1);
   assert.equal(completionParameters?.properties?.goal_id?.maxLength, 128);
   assert.equal(completionParameters?.properties?.summary?.minLength, 1);
@@ -59,15 +60,15 @@ test("goal registers command, status tools, and lifecycle hooks", () => {
         properties?: Record<string, { minimum?: number; minLength?: number; maxLength?: number }>;
       }
     | undefined;
-  assert.deepEqual(blockedParameters?.required, ["goal_id", "reason", "evidence", "repeated_turns"]);
+  assert.deepEqual(blockedParameters?.required, ["goal_id", "reason", "evidence"]);
+  assert.equal(blockedParameters?.properties?.repeated_turns, undefined);
   assert.equal(blockedParameters?.properties?.goal_id?.minLength, 1);
   assert.equal(blockedParameters?.properties?.goal_id?.maxLength, 128);
   assert.equal(blockedParameters?.properties?.reason?.minLength, 1);
   assert.equal(blockedParameters?.properties?.reason?.maxLength, 1_000);
   assert.equal(blockedParameters?.properties?.evidence?.minLength, 1);
   assert.equal(blockedParameters?.properties?.evidence?.maxLength, 4_000);
-  assert.equal(blockedParameters?.properties?.repeated_turns?.minimum, 3);
-  assert.match(String(blockerDefinition?.description), /blocker.*three consecutive Goal turns/i);
+  assert.match(String(blockerDefinition?.description), /cannot go forward at all without an action you cannot take/i);
   assert.match(String(blockerDefinition?.description), /visibility alone does not activate Goal mode/i);
   assert.equal(blockerDefinition?.promptSnippet, undefined);
   assert.equal(blockerDefinition?.promptGuidelines, undefined);

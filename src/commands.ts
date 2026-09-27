@@ -1,5 +1,6 @@
 import { validateObjective } from "./command.js";
 import { notifyTerminal, safeGoalMenuText, safeTerminalText } from "./errors.js";
+import { resolveObjectiveFile } from "./objective-file.js";
 import type { ActiveGoal } from "./persistence.js";
 import {
   buildGoalPrompt,
@@ -70,7 +71,7 @@ export class GoalCommandController {
     this.runtime.cancelContinuationWork();
     this.runtime.clearGoalRecovery();
     this.runtime.clearStaleGoalToolCallBlock();
-    const startedGoal = createGoal(objective);
+    const startedGoal = createGoal(objective, resolveObjectiveFile(objective, ctx.cwd));
     this.runtime.activeGoal = startedGoal;
     this.runtime.persistGoal(startedGoal);
     this.runtime.updateStatus(ctx, startedGoal);
@@ -80,7 +81,8 @@ export class GoalCommandController {
       return;
     }
     if (this.runtime.activeGoal?.id !== startedGoal.id) return;
-    notifyTerminal(ctx.ui, `${existingGoal ? "Goal replaced" : "Goal started"}: ${objective}`, "info");
+    const file = startedGoal.objectiveFile ? ` (prompt file ${startedGoal.objectiveFile.path})` : "";
+    notifyTerminal(ctx.ui, `${existingGoal ? "Goal replaced" : "Goal started"}: ${objective}${file}`, "info");
   }
 
   pauseGoal(ctx: StatusContext) {
@@ -186,7 +188,12 @@ export class GoalCommandController {
     this.runtime.cancelContinuationWork();
     this.runtime.clearGoalRecovery();
     const transitionedGoal = transitionGoal(
-      { ...nextGoalInstance(currentGoal), text: objective, waiting: undefined },
+      {
+        ...nextGoalInstance(currentGoal),
+        text: objective,
+        objectiveFile: resolveObjectiveFile(objective, ctx.cwd),
+        waiting: undefined,
+      },
       editedGoalStatus(previousStatus),
     );
     const editedGoal = transitionedGoal.status === "active" ? resetGoalSafetyEpoch(transitionedGoal) : transitionedGoal;

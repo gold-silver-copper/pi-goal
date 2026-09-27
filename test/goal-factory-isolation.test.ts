@@ -250,7 +250,6 @@ test("goal_blocked ownership stays on the root instance after child start", asyn
       goal_id: rootGoal.id,
       reason: "Need offline hardware access that remains unavailable",
       evidence: "Attempted recovery three times with the same USB failure",
-      repeated_turns: 3,
     },
     new AbortController().signal,
     () => undefined,

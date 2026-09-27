@@ -598,7 +598,6 @@ test("pause, clear, edit, completion, and blocking cancel waiting deadlines", as
           goal_id: goal.id,
           reason: "External system permanently rejected access",
           evidence: "The same rejection was verified in three separate goal turns.",
-          repeated_turns: 3,
         },
         new AbortController().signal,
         () => undefined,

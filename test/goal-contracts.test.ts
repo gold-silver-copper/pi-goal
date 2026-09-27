@@ -3,8 +3,9 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
 import { createMockContext, createMockPi } from "./support/pi-mock.js";
-import { formatDuration, isContradictoryCompletionSummary } from "../src/goal.js";
+import { formatDuration } from "../src/goal.js";
 import {
+  assertGoalContractRules,
   assertHardenedGoalPrompt,
   assertPromptHasGoalId,
   assistantUsageEntry,
@@ -124,7 +125,7 @@ test("goal notifications sanitize terminal controls without mutating the objecti
   assert.match(notification, /ship\s+clear\s+31mred\s+safely/u);
 });
 
-test("all goal prompt paths share the goal_id guard and hardened audit", async () => {
+test("all goal prompt paths share the goal_id guard and leave the rules to the contract", async () => {
   const started = await startGoalForTest();
   const initialGoal = requireLastGoal(started.mock);
   const initialPrompt = started.mock.sentUserMessages[0]?.text ?? "";
@@ -138,7 +139,7 @@ test("all goal prompt paths share the goal_id guard and hardened audit", async (
   ) as { message?: { content?: string; customType?: string } } | undefined;
   assert.equal(beforeStart?.message?.customType, "goal-contract");
   assertPromptHasGoalId(beforeStart?.message?.content ?? "", initialGoal.id);
-  assertHardenedGoalPrompt(beforeStart?.message?.content ?? "");
+  assertGoalContractRules(beforeStart?.message?.content ?? "");
 
   await started.mock.events.get("agent_end")?.[0]?.(
     { messages: [{ role: "assistant", stopReason: "stop" }] },
@@ -307,7 +308,6 @@ test("terminal tools reject post-schema oversized fields and bound every echoed 
       goal_id: longId,
       reason: "Need access",
       evidence: "Three attempts failed.",
-      repeated_turns: 3,
     },
     new AbortController().signal,
     () => undefined,
@@ -337,65 +337,36 @@ test("terminal tools reject post-schema oversized fields and bound every echoed 
   assert.ok(output.split("\n").length <= 2_000);
 });
 
-test("goal_complete rejects contradictory summaries and accepts verified completion", async () => {
-  assert.equal(isContradictoryCompletionSummary("Not complete: tests still fail."), true);
-  assert.equal(isContradictoryCompletionSummary("Tests still fail."), true);
-  assert.equal(isContradictoryCompletionSummary("Implemented and verified with npm test."), false);
-  assert.equal(isContradictoryCompletionSummary("Remaining tasks: none."), false);
-  assert.equal(isContradictoryCompletionSummary("Could not complete earlier, but now fixed and verified."), false);
-  assert.equal(isContradictoryCompletionSummary("Was failing before, now passes."), false);
-  assert.equal(isContradictoryCompletionSummary("Coverage was below threshold, now passes."), false);
-
+test("goal_complete accepts honest deviations and rejects only objective problems", async () => {
   const { mock, ctx } = await startGoalForTest();
   const tool = requireGoalTool(mock, "goal_complete");
   const goalId = requireLastGoal(mock).id;
+  const call = (params: Record<string, unknown>) =>
+    tool.execute("call", { goal_id: goalId, ...params }, new AbortController().signal, () => undefined, ctx);
 
-  const rejected = await tool.execute(
-    "call-1",
-    { goal_id: goalId, summary: "Not complete: tests still fail." },
-    new AbortController().signal,
-    () => undefined,
-    ctx,
-  );
-
-  assert.equal(rejected.terminate, undefined);
-  assert.match(rejected.content?.[0]?.text ?? "", /rejected/i);
-  assert.equal(lastGoalStatus(mock), "active");
-
-  const emptyRejected = await tool.execute(
-    "call-empty",
-    { goal_id: goalId, summary: "   " },
-    new AbortController().signal,
-    () => undefined,
-    ctx,
-  );
-
+  const emptyRejected = await call({ summary: "   " });
   assert.equal(emptyRejected.terminate, undefined);
-  assert.match(emptyRejected.content?.[0]?.text ?? "", /summary is empty/i);
+  assert.match(emptyRejected.content?.[0]?.text ?? "", /Goal completion rejected: summary is empty\./u);
+  const longDeviations = await call({ summary: "done", deviations: "x".repeat(2_001) });
+  assert.match(longDeviations.content?.[0]?.text ?? "", /deviations is too long \(2001\/2000 characters\)/u);
   assert.equal(lastGoalStatus(mock), "active");
 
-  const accepted = await tool.execute(
-    "call-2",
-    { goal_id: goalId, summary: "Implemented and verified with npm test." },
-    new AbortController().signal,
-    () => undefined,
-    ctx,
-  );
-
+  // The summaries that upstream's regex rejected in the audited sessions are accepted now.
+  const accepted = await call({
+    summary: "STREAMING_PERFORMANCE_PROMPT.md is done: 12 local commits, none pushed, per the prompt.",
+    deviations:
+      "Warming a stage's scenery as soon as its window is planned was not done. It would change generated worlds.",
+  });
   assert.equal(accepted.terminate, true);
   assert.equal(lastGoalStatus(mock), null);
+  const text = accepted.content?.[0]?.text ?? "";
+  assert.match(text, /^Goal complete: STREAMING_PERFORMANCE_PROMPT\.md is done/u);
+  assert.match(text, /Deviations:\nWarming a stage's scenery .* was not done/u);
+  assert.equal(accepted.details?.deviations?.startsWith("Warming"), true);
 
-  const noActiveRejected = await tool.execute(
-    "call-no-active",
-    { goal_id: goalId, summary: "Implemented and verified with npm test." },
-    new AbortController().signal,
-    () => undefined,
-    ctx,
-  );
-
+  const noActiveRejected = await call({ summary: "Implemented and verified with npm test." });
   assert.equal(noActiveRejected.terminate, undefined);
   assert.match(noActiveRejected.content?.[0]?.text ?? "", /no active goal/i);
-  assert.equal(lastGoalStatus(mock), null);
   mock.events.get("session_shutdown")?.[0]?.({}, ctx);
 });
 
@@ -495,7 +466,6 @@ test("goal_blocked rejects calls without an active goal", async () => {
       goal_id: "missing",
       reason: "Need access",
       evidence: "Three attempts failed",
-      repeated_turns: 3,
     },
     new AbortController().signal,
     () => undefined,
@@ -515,7 +485,7 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
 
   const stale = await blockerTool.execute(
     "block-stale",
-    { goal_id: "stale", reason: "", evidence: "", repeated_turns: 0 },
+    { goal_id: "stale", reason: "", evidence: "" },
     new AbortController().signal,
     () => undefined,
     blocked.ctx,
@@ -524,22 +494,12 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
   assert.equal(lastGoalStatus(blocked.mock), "active");
 
   for (const [params, rejection] of [
-    [
-      {
-        goal_id: currentGoal.id,
-        reason: "Need access",
-        evidence: "Tried available paths",
-        repeated_turns: 2,
-      },
-      /at least 3/i,
-    ],
-    [{ goal_id: currentGoal.id, reason: "Need access", evidence: "   ", repeated_turns: 3 }, /evidence is empty/i],
+    [{ goal_id: currentGoal.id, reason: "Need access", evidence: "   " }, /evidence is empty/i],
     [
       {
         goal_id: currentGoal.id,
         reason: "   ",
         evidence: "Three attempts failed",
-        repeated_turns: 3,
       },
       /reason is empty/i,
     ],
@@ -548,7 +508,6 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
         goal_id: currentGoal.id,
         reason: "r".repeat(1_001),
         evidence: "Three attempts failed",
-        repeated_turns: 3,
       },
       /reason is too long/i,
     ],
@@ -557,18 +516,8 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
         goal_id: currentGoal.id,
         reason: "Need access",
         evidence: "e".repeat(4_001),
-        repeated_turns: 3,
       },
       /evidence is too long/i,
-    ],
-    [
-      {
-        goal_id: currentGoal.id,
-        reason: "Need access",
-        evidence: "Three attempts failed",
-        repeated_turns: 3.5,
-      },
-      /whole number/i,
     ],
   ] as const) {
     const result = await blockerTool.execute(
@@ -590,7 +539,6 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
       goal_id: currentGoal.id,
       reason: blockerReason,
       evidence: "Three separate attempts confirmed that no available credential can read it.",
-      repeated_turns: 3,
     },
     new AbortController().signal,
     () => undefined,
@@ -631,7 +579,6 @@ test("goal_blocked requires a current active goal and strict blocker evidence", 
       goal_id: currentGoal.id,
       reason: "Still blocked",
       evidence: "The external state is unchanged.",
-      repeated_turns: 4,
     },
     new AbortController().signal,
     () => undefined,
